@@ -1,0 +1,1326 @@
+---
+title: "AP05_CVD_MSstats"
+author: "Alex Panov"
+date: "2024-11-18"
+output: 
+  html_document:
+    toc: true
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+```
+
+## Cardiovascular Disease (CVD) Screen
+
+This project runs ~Sept 2024 - Spring 2025. Genetic knockouts made in 350 genes that were chosen by the computational geneticists in X cell line. Proteomics were performed on each KO. All proteomics analysis herein performed by AP.
+
+In this report, we will:
+  1. Set up the R packages we need
+  2. Fetch the data from a local source
+  3. Process it by MSstats
+
+First, name packages that we need.
+```{r}
+list.of.packages <- c("MSstats", "ggplot2", "ggforce", "dplyr", "fgsea")
+new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
+if(length(new.packages)) install.packages(new.packages)
+## will give warning if not installed, but will run up until hits unknown function
+lapply(list.of.packages, require, character.only = TRUE)
+
+## List of hardcoded variables/etc in this Markdown:
+# vec_control_conditions
+```
+
+## Run MSstats for the 30 SPD runs.
+
+```{r}
+
+#### 30 SPD first through MSstats ####
+df_raw_30 <- read.table("./data/Report_CardioCRISPR_FullScreen_Plates1-4_DIA-30SPD.tsv", sep = "\t", header = T, na.strings = c("NA", "NULL", "Null", "null", "NaN"))
+
+## drop rows that MSstats throws out
+df_raw_30 <- df_raw_30[which(df_raw_30$F.ExcludedFromQuantification=="False" & df_raw_30$F.FrgLossType=="noloss"),]
+
+## Create annotations and run Converter
+annot_precursor_30 <- unique(df_raw_30[,c("R.Condition", "R.FileName", "R.Replicate")])
+annot_30 <- data.frame(
+  Run = annot_precursor_30$R.FileName,
+  Condition = annot_precursor_30$R.Condition,
+  BioReplicate = annot_precursor_30$R.Replicate
+)
+## save memory
+annot_precursor_30 <- NULL
+
+quant_30 <- MSstats::SpectronauttoMSstatsFormat(df_raw_30,
+                                             annotation = annot_30,
+                                             filter_with_Qvalue = T,
+                                             qvalue_cutoff = 0.01,
+                                             removeProtein_with1Feature = T)
+## save memory
+df_raw_30 <- NULL
+char_filename_date <- format(Sys.time(), "%Y_%m_%d_%H_%M_%S")
+save.image(paste0("./data_images/", char_filename_date, "quant_30.RData"))
+
+## Run dataProcess step, "actual math" as Liang says
+## If running Mac/Linux, can use multiple cores.
+if (.Platform$OS.type=="unix") {
+spectronaut_proposed_30 <- MSstats::dataProcess(quant_30, 
+                                             normalization = 'EQUALIZEMEDIANS',
+                                             summaryMethod = "TMP",
+                                             # cutoffCensored = "minFeature",
+                                             censoredInt = "0",
+                                             ## suggested by Devon Kohler for large datasets
+                                             MBimpute = FALSE,
+                                             ## for DIA datasets, use topN
+                                             featureSubset = "topN",
+                                             ## for DIA datasets, use topN
+                                             n_top_feature = 20,
+                                             ## for MacOS or Linux, can assign multiple cores
+                                             numberOfCores = 4,
+                                             maxQuantileforCensored = 0.999)
+}
+if (.Platform$OS.type=="windows") {
+  spectronaut_proposed_30 <- MSstats::dataProcess(quant_30, 
+                                             normalization = 'EQUALIZEMEDIANS',
+                                             summaryMethod = "TMP",
+                                             # cutoffCensored = "minFeature",
+                                             censoredInt = "0",
+                                             ## suggested by Devon Kohler for large datasets
+                                             MBimpute = FALSE,
+                                             ## for DIA datasets, use topN
+                                             featureSubset = "topN",
+                                             ## for DIA datasets, use topN
+                                             n_top_feature = 20,
+                                             ## for MacOS or Linux, can assign multiple cores
+                                             # numberOfCores = 4,
+                                             maxQuantileforCensored = 0.999)
+}
+## save memory, compost
+quant_30 <- NULL
+char_filename_date <- format(Sys.time(), "%Y_%m_%d_%H_%M_%S")
+save.image(paste0("./data_images/", char_filename_date, "spectronaut_proposed_30.RData"))
+
+## assign protein level data a dataframe
+df_30 <- spectronaut_proposed_30$ProteinLevelData
+
+
+## an optional data summarization sanity check
+# MSstats::dataProcessPlots(data = spectronaut_proposed_30, type = "QCplot", width = 40, height = 10, which.Protein="allonly")
+
+## Next step for MSstats is groupComparison. Have to make the comparison matrix. Automated.
+## make the controls, aka denominator
+vec_control_conditions <- c("AAVS1_G1G2", "HPRT_G1G2", "HPRT_G1")
+## create a list to collapse at end of building, one matrix for each control condition
+## each element of this list will become a matrix, which we will rbind together at end
+list_mat_comparison_msstats_30 <- vector("list", length= length(vec_control_conditions))
+## make the experimental conditions
+vec_experimental_conditions_30 <- levels(spectronaut_proposed_30$ProteinLevelData$GROUP)[!(levels(spectronaut_proposed_30$ProteinLevelData$GROUP) %in% vec_control_conditions)]
+## how to automate this matrix, hmm
+
+## First create matrices that are length(vec_experimental_conditions) rows long with rownames == vec_experimental_conditions and colnames == all.
+for (i in 1:length(list_mat_comparison_msstats_30)) {
+  ## for now, the rownames do not contain the name of the control condition. We will replace later after grepl step. 
+  list_mat_comparison_msstats_30_names01 <- list(mat_comparison_rows = paste0(vec_experimental_conditions_30),
+                                          mat_comparison_cols = levels(spectronaut_proposed_30$ProteinLevelData$GROUP))
+  list_mat_comparison_msstats_30[[i]] <- matrix(ncol = length(levels(spectronaut_proposed_30$ProteinLevelData$GROUP)),
+                                             nrow = length(vec_experimental_conditions_30),
+                                             dimnames = list_mat_comparison_msstats_30_names01)
+}
+
+## This is the major matrix creation step
+for (j in 1:length(list_mat_comparison_msstats_30)) {
+  for (i in 1:length(vec_experimental_conditions_30)) {
+    a <- vec_experimental_conditions_30[i]
+    b <- list_mat_comparison_msstats_30[[j]][i,]
+    list_mat_comparison_msstats_30[[j]][i,] <- as.integer(grepl(a, names(b)))
+  }
+}
+
+## Now that we have that, we can assign the controls a value of -1
+for (i in 1:length(vec_control_conditions)) {
+list_mat_comparison_msstats_30[[i]][,grep(paste0("^", vec_control_conditions[i], "$"), colnames(list_mat_comparison_msstats_30[[i]]))] <- -1
+}
+
+## last step is to add the control to the rownames
+for (i in 1:length(list_mat_comparison_msstats_30)) {
+  list_mat_comparison_msstats_30_names02 <- paste0(vec_experimental_conditions_30, "-", vec_control_conditions[i])
+   rownames(list_mat_comparison_msstats_30[[i]]) <-  list_mat_comparison_msstats_30_names02
+   
+}
+
+## best to build each comparison matrix for each CONTROL at a time. Each control row gets a -1 as the denominator. ALso want to fill in the 
+
+mat_comparison_msstats_30 <- do.call(rbind, list_mat_comparison_msstats_30)
+## BOOM
+
+
+## Run the differential analysis using MSstats
+DA_msstats_30 <- MSstats::groupComparison(contrast.matrix = mat_comparison_msstats_30, data = spectronaut_proposed_30)
+
+## save memory, compost
+spectronaut_proposed_30 <- NULL
+char_filename_date <- format(Sys.time(), "%Y_%m_%d_%H_%M_%S")
+save.image(paste0("./data_images/", char_filename_date, "DA_msstats_30.RData"))
+
+## Pull out the comparison table
+df_comp_30 <- DA_msstats_30$ComparisonResult
+
+## save memory, compost
+DA_msstats_30 <- NULL
+char_filename_date <- format(Sys.time(), "%Y_%m_%d_%H_%M_%S")
+save.image(paste0("./data_images/", char_filename_date, "df_30_df_comp_30.RData"))
+
+
+
+```
+
+## Run MSstats for 60 SPD runs.
+```{r}
+#### 60 SPD first through MSstats ####
+df_raw_60 <- read.table("./data/Report_CardioCRISPR_FullScreen_Plates1-4_DIA-60SPD.tsv", sep = "\t", header = T, na.strings = c("NA", "NULL", "Null", "null", "NaN"))
+
+## drop rows that MSstats throws out
+df_raw_60 <- df_raw_60[which(df_raw_60$F.ExcludedFromQuantification=="False" & df_raw_60$F.FrgLossType=="noloss"),]
+
+## Create annotations and run Converter
+annot_precursor_60 <- unique(df_raw_60[,c("R.Condition", "R.FileName", "R.Replicate")])
+annot_60 <- data.frame(
+  Run = annot_precursor_60$R.FileName,
+  Condition = annot_precursor_60$R.Condition,
+  BioReplicate = annot_precursor_60$R.Replicate
+)
+## save memory
+annot_precursor_60 <- NULL
+
+quant_60 <- MSstats::SpectronauttoMSstatsFormat(df_raw_60,
+                                             annotation = annot_60,
+                                             filter_with_Qvalue = T,
+                                             qvalue_cutoff = 0.01,
+                                             removeProtein_with1Feature = T)
+## save memory
+df_raw_60 <- NULL
+char_filename_date <- format(Sys.time(), "%Y_%m_%d_%H_%M_%S")
+save.image(paste0("./data_images/", char_filename_date, "quant_60.RData"))
+
+## Run dataProcess step, "actual math" as Liang says
+## If running Mac/Linux, can use multiple cores.
+if (.Platform$OS.type=="unix") {
+spectronaut_proposed_60 <- MSstats::dataProcess(quant_60, 
+                                             normalization = 'EQUALIZEMEDIANS',
+                                             summaryMethod = "TMP",
+                                             # cutoffCensored = "minFeature",
+                                             censoredInt = "0",
+                                             ## suggested by Devon Kohler for large datasets
+                                             MBimpute = FALSE,
+                                             ## for DIA datasets, use topN
+                                             featureSubset = "topN",
+                                             ## for DIA datasets, use topN
+                                             n_top_feature = 20,
+                                             ## for MacOS or Linux, can assign multiple cores
+                                             numberOfCores = 4,
+                                             maxQuantileforCensored = 0.999)
+}
+if (.Platform$OS.type=="windows") {
+  spectronaut_proposed_60 <- MSstats::dataProcess(quant_60, 
+                                             normalization = 'EQUALIZEMEDIANS',
+                                             summaryMethod = "TMP",
+                                             # cutoffCensored = "minFeature",
+                                             censoredInt = "0",
+                                             ## suggested by Devon Kohler for large datasets
+                                             MBimpute = FALSE,
+                                             ## for DIA datasets, use topN
+                                             featureSubset = "topN",
+                                             ## for DIA datasets, use topN
+                                             n_top_feature = 20,
+                                             ## for MacOS or Linux, can assign multiple cores
+                                             # numberOfCores = 4,
+                                             maxQuantileforCensored = 0.999)
+}
+## save memory, compost
+quant_60 <- NULL
+char_filename_date <- format(Sys.time(), "%Y_%m_%d_%H_%M_%S")
+save.image(paste0("./data_images/", char_filename_date, "spectronaut_proposed_60.RData"))
+
+## assign protein level data a dataframe
+df_60 <- spectronaut_proposed_60$ProteinLevelData
+
+
+## an optional data summarization sanity check
+# MSstats::dataProcessPlots(data = spectronaut_proposed_60, type = "QCplot", width = 40, height = 10, which.Protein="allonly")
+
+## Next step for MSstats is groupComparison. Have to make the comparison matrix. Automated.
+## make the controls, aka denominator
+vec_control_conditions <- c("AAVS1_G1G2", "HPRT_G1G2", "HPRT_G1")
+## create a list to collapse at end of building, one matrix for each control condition
+## each element of this list will become a matrix, which we will rbind together at end
+list_mat_comparison_msstats_60 <- vector("list", length= length(vec_control_conditions))
+## make the experimental conditions
+vec_experimental_conditions_60 <- levels(spectronaut_proposed_60$ProteinLevelData$GROUP)[!(levels(spectronaut_proposed_60$ProteinLevelData$GROUP) %in% vec_control_conditions)]
+## how to automate this matrix, hmm
+
+## First create matrices that are length(vec_experimental_conditions) rows long with rownames == vec_experimental_conditions and colnames == all.
+for (i in 1:length(list_mat_comparison_msstats_60)) {
+  ## for now, the rownames do not contain the name of the control condition. We will replace later after grepl step. 
+  list_mat_comparison_msstats_60_names01 <- list(mat_comparison_rows = paste0(vec_experimental_conditions_60),
+                                          mat_comparison_cols = levels(spectronaut_proposed_60$ProteinLevelData$GROUP))
+  list_mat_comparison_msstats_60[[i]] <- matrix(ncol = length(levels(spectronaut_proposed_60$ProteinLevelData$GROUP)),
+                                             nrow = length(vec_experimental_conditions_60),
+                                             dimnames = list_mat_comparison_msstats_60_names01)
+}
+
+## This is the major matrix creation step
+for (j in 1:length(list_mat_comparison_msstats_60)) {
+  for (i in 1:length(vec_experimental_conditions_60)) {
+    a <- vec_experimental_conditions_60[i]
+    b <- list_mat_comparison_msstats_60[[j]][i,]
+    list_mat_comparison_msstats_60[[j]][i,] <- as.integer(grepl(a, names(b)))
+  }
+}
+
+## Now that we have that, we can assign the controls a value of -1
+for (i in 1:length(vec_control_conditions)) {
+list_mat_comparison_msstats_60[[i]][,grep(paste0("^", vec_control_conditions[i], "$"), colnames(list_mat_comparison_msstats_60[[i]]))] <- -1
+}
+
+## last step is to add the control to the rownames
+for (i in 1:length(list_mat_comparison_msstats_60)) {
+  list_mat_comparison_msstats_60_names02 <- paste0(vec_experimental_conditions_60, "-", vec_control_conditions[i])
+   rownames(list_mat_comparison_msstats_60[[i]]) <-  list_mat_comparison_msstats_60_names02
+   
+}
+
+## best to build each comparison matrix for each CONTROL at a time. Each control row gets a -1 as the denominator. ALso want to fill in the 
+
+mat_comparison_msstats_60 <- do.call(rbind, list_mat_comparison_msstats_60)
+## BOOM
+
+
+## Run the differential analysis using MSstats
+DA_msstats_60 <- MSstats::groupComparison(contrast.matrix = mat_comparison_msstats_60, data = spectronaut_proposed_60)
+
+## save memory, compost
+spectronaut_proposed_60 <- NULL
+char_filename_date <- format(Sys.time(), "%Y_%m_%d_%H_%M_%S")
+save.image(paste0("./data_images/", char_filename_date, "DA_msstats_60.RData"))
+
+## Pull out the comparison table
+df_comp_60 <- DA_msstats_60$ComparisonResult
+
+## save memory, compost
+DA_msstats_60 <- NULL
+char_filename_date <- format(Sys.time(), "%Y_%m_%d_%H_%M_%S")
+save.image(paste0("./data_images/", char_filename_date, "df_comp_30_df_comp_60.RData"))
+```
+## Quality control: Number proteins captured between runs
+```{r}
+## Add back in labels, identifiers
+df_id <- read.csv("./data/Full Study Proteomics Samples Master Table 1.csv",header = T, na.strings = c("NA", "NULL", "Null", "null", "NaN"))
+## add variable for plate edge, which includes wells 
+vec_edge_wells <- c("A01", "A02", "A03", "A04", "A05", "A06", "A07", "A08", "A09", "A10", "A11", "A12", "B01", "C01", "D01", "E01", "F01", "G01", "H01", "H02", "H03", "H04", "H05", "H06", "H07", "H08", "H09", "H10", "H11", "H12", "B12", "C12", "D12", "E12", "F12", "G12")
+df_id$edge_well <- ifelse(df_id$well %in% vec_edge_wells, "yes", "no")
+## change name of column to match MSstats protein level df
+colnames(df_id)[colnames(df_id)=="proteomics_sample_id"] <- "originalRUN"
+colnames(df_id)[colnames(df_id)=="target_guide"] <- "GROUP"
+
+
+
+## Save this df in case need later
+## can add "GROUP" back later, unique for each run (each proteome)
+df_groupnames_30 <- unique(df_30[,c("RUN", "originalRUN", "GROUP")])
+df_groupnames_30$RUN <- as.numeric(levels(df_groupnames_30$RUN))[df_groupnames_30$RUN]
+df_groupnames_30$originalRUN <- as.numeric(levels(df_groupnames_30$originalRUN))[df_groupnames_30$originalRUN]
+## add number proteins quantified; each row is a protein
+df_groupnames_30$n_Proteins <- as.numeric(table(df_30$RUN))
+## convert to the non-alphabetical order that matches the runs
+df_groupnames_30$GROUP <- factor(df_groupnames_30$GROUP, levels = unique(df_groupnames_30$GROUP))
+df_groupnames_30 <- df_groupnames_30[order(df_groupnames_30$originalRUN),]
+## also add batch and plate, do not hardcode, merge with original df_id table
+df_groupnames_30 <- merge(df_groupnames_30, df_id, by = c("originalRUN", "GROUP"))
+df_groupnames_30 <- df_groupnames_30[order(df_groupnames_30$originalRUN),]
+## ask about any outliers, 3SD from mean was metric Pierre used
+num_groupnames_30_mean <- mean(df_groupnames_30$n_Proteins)
+num_groupnames_30_sd <- sd(df_groupnames_30$n_Proteins)
+num_groupnames_30_upper <- num_groupnames_30_mean + (3*num_groupnames_30_sd)
+num_groupnames_30_lower <- num_groupnames_30_mean - (3*num_groupnames_30_sd)
+df_groupnames_30$outlier <- ifelse(df_groupnames_30$n_Proteins > num_groupnames_30_upper | df_groupnames_30$n_Proteins < num_groupnames_30_lower, "yes", "no")
+
+## create some labels by using summary stats
+df_groupnames_30_summary <- df_groupnames_30 %>%
+  group_by(GROUP) %>%
+  ## "RUN" column is by alphabetical sample and replicate order, so will be grouped together in a graph
+  summarize(mean = mean(n_Proteins), mean_run = median(RUN))
+
+## from df_groupnames_30 above
+ggplot(data = df_groupnames_30, aes(x = RUN, y = n_Proteins, fill = GROUP)) +
+  geom_col() +
+  scale_fill_viridis_d(end = 0.90) +
+  scale_color_viridis_d(end = 0.90) +
+  geom_point(data = df_groupnames_30[which(df_groupnames_30$outlier=="yes"),], aes(x = RUN, y = n_Proteins)) +
+  geom_text(data = df_groupnames_30_summary, aes(x = mean_run, y = (num_groupnames_30_mean + (0.025*num_groupnames_30_mean)), label = GROUP, color = GROUP), angle = 90, vjust = 0.5, hjust =0) +
+  geom_vline(xintercept = seq(0,288, by = 72), linetype = "dotted") +
+  ggtitle("Proteins quantified in each run") +
+  xlab("Runs in order") +
+  ylab("Number proteins") +
+  scale_x_continuous(breaks = seq(0,300,by = 10))+ 
+  scale_y_continuous(breaks = seq(0,7500,by = 500), limits = c(0,7500)) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  theme_bw()
+
+## Runs in order
+ggplot(data = df_groupnames_30, aes(x = originalRUN, y = n_Proteins, fill = GROUP)) +
+  geom_col() +
+  scale_fill_viridis_d(end = 0.90) +
+  scale_color_viridis_d(end = 0.90) +
+  geom_point(data = df_groupnames_30[which(df_groupnames_30$outlier=="yes"),], aes(x = originalRUN, y = n_Proteins)) +
+  # geom_text(data = df_groupnames_30_summary, aes(x = mean_run, y = (num_groupnames_30_mean + (0.025*num_groupnames_30_mean)), label = GROUP, color = GROUP), angle = 90, vjust = 0.5, hjust =0) +
+  geom_vline(xintercept = seq(0,288, by = 72), linetype = "dotted") +
+  ggtitle("Proteins quantified in each run") +
+  xlab("Runs in order") +
+  ylab("Number proteins") +
+  scale_x_continuous(breaks = seq(0,300,by = 10))+ 
+  scale_y_continuous(breaks = seq(0,7500,by = 500), limits = c(0,7500)) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  theme_bw()
+## Edge wells
+ggplot(data = df_groupnames_30, aes(x = originalRUN, y = n_Proteins, fill = edge_well)) +
+  geom_col() +
+  scale_fill_viridis_d(end = 0.90) +
+  scale_color_viridis_d(end = 0.90) +
+  geom_point(data = df_groupnames_30[which(df_groupnames_30$outlier=="yes"),], aes(x = originalRUN, y = n_Proteins)) +
+  # geom_text(data = df_groupnames_30_summary, aes(x = mean_run, y = (num_groupnames_30_mean + (0.025*num_groupnames_30_mean)), label = GROUP, color = GROUP), angle = 90, vjust = 0.5, hjust =0) +
+  geom_vline(xintercept = seq(0,288, by = 72), linetype = "dotted") +
+  ggtitle("Proteins quantified in each run") +
+  xlab("Runs in order") +
+  ylab("Number proteins") +
+  scale_x_continuous(breaks = seq(0,300,by = 10))+ 
+  scale_y_continuous(breaks = seq(0,7500,by = 500), limits = c(0,7500)) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  theme_bw()
+
+## Compare to 60 SPD
+## Save this df in case need later
+## can add "GROUP" back later, unique for each run (each proteome)
+df_groupnames_60 <- unique(df_60[,c("RUN", "originalRUN", "GROUP")])
+df_groupnames_60$RUN <- as.numeric(levels(df_groupnames_60$RUN))[df_groupnames_60$RUN]
+df_groupnames_60$originalRUN <- as.numeric(levels(df_groupnames_60$originalRUN))[df_groupnames_60$originalRUN]
+## add number proteins quantified; each row is a protein
+df_groupnames_60$n_Proteins <- as.numeric(table(df_60$RUN))
+## convert to the non-alphabetical order that matches the runs
+df_groupnames_60$GROUP <- factor(df_groupnames_60$GROUP, levels = unique(df_groupnames_60$GROUP))
+df_groupnames_60 <- df_groupnames_60[order(df_groupnames_60$originalRUN),]
+## also add batch and plate, do not hardcode, merge with original df_id table
+df_groupnames_60 <- merge(df_groupnames_60, df_id, by = c("originalRUN", "GROUP"))
+df_groupnames_60 <- df_groupnames_60[order(df_groupnames_60$originalRUN),]
+## ask about any outliers, 3SD from mean was metric Pierre used
+num_groupnames_60_mean <- mean(df_groupnames_60$n_Proteins)
+num_groupnames_60_sd <- sd(df_groupnames_60$n_Proteins)
+num_groupnames_60_upper <- num_groupnames_60_mean + (3*num_groupnames_60_sd)
+num_groupnames_60_lower <- num_groupnames_60_mean - (3*num_groupnames_60_sd)
+df_groupnames_60$outlier <- ifelse(df_groupnames_60$n_Proteins > num_groupnames_60_upper | df_groupnames_60$n_Proteins < num_groupnames_60_lower, "yes", "no")
+
+
+## create some labels by using summary stats
+df_groupnames_60_summary <- df_groupnames_60 %>%
+  group_by(GROUP) %>%
+  ## "RUN" column is by alphabetical sample and replicate order, so will be grouped together in a graph
+  summarize(mean = mean(n_Proteins), mean_run = median(RUN))
+
+## from df_groupnames_60 above
+ggplot(data = df_groupnames_60, aes(x = RUN, y = n_Proteins, fill = GROUP)) +
+  geom_col() +
+  scale_fill_viridis_d(end = 0.90) +
+  scale_color_viridis_d(end = 0.90) +
+  geom_point(data = df_groupnames_60[which(df_groupnames_60$outlier=="yes"),], aes(x = RUN, y = n_Proteins)) +
+  geom_text(data = df_groupnames_60_summary, aes(x = mean_run, y = (num_groupnames_60_mean + (0.025*num_groupnames_60_mean)), label = GROUP, color = GROUP), angle = 90, vjust = 0.5, hjust =0) +
+  geom_vline(xintercept = seq(0,288, by = 72), linetype = "dotted") +
+  ggtitle("Proteins quantified in each run") +
+  xlab("Runs in order") +
+  ylab("Number proteins") +
+  scale_x_continuous(breaks = seq(0,600,by = 10))+ 
+  scale_y_continuous(breaks = seq(0,7500,by = 500), limits = c(0,7500)) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  theme_bw()
+
+## Runs in order
+ggplot(data = df_groupnames_60, aes(x = originalRUN, y = n_Proteins, fill = GROUP)) +
+  geom_col() +
+  scale_fill_viridis_d(end = 0.90) +
+  scale_color_viridis_d(end = 0.90) +
+  geom_point(data = df_groupnames_60[which(df_groupnames_60$outlier=="yes"),], aes(x = originalRUN, y = n_Proteins)) +
+  # geom_text(data = df_groupnames_60_summary, aes(x = mean_run, y = (num_groupnames_60_mean + (0.025*num_groupnames_60_mean)), label = GROUP, color = GROUP), angle = 90, vjust = 0.5, hjust =0) +
+  geom_vline(xintercept = seq(0,288, by = 72), linetype = "dotted") +
+  ggtitle("Proteins quantified in each run") +
+  xlab("Runs in order") +
+  ylab("Number proteins") +
+  scale_x_continuous(breaks = seq(0,600,by = 10))+ 
+  scale_y_continuous(breaks = seq(0,7500,by = 500), limits = c(0,7500)) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  theme_bw()
+## Edge wells
+ggplot(data = df_groupnames_60, aes(x = originalRUN, y = n_Proteins, fill = edge_well)) +
+  geom_col() +
+  scale_fill_viridis_d(end = 0.90) +
+  scale_color_viridis_d(end = 0.90) +
+  geom_point(data = df_groupnames_60[which(df_groupnames_60$outlier=="yes"),], aes(x = originalRUN, y = n_Proteins)) +
+  # geom_text(data = df_groupnames_60_summary, aes(x = mean_run, y = (num_groupnames_60_mean + (0.025*num_groupnames_60_mean)), label = GROUP, color = GROUP), angle = 90, vjust = 0.5, hjust =0) +
+  geom_vline(xintercept = seq(0,288, by = 72), linetype = "dotted") +
+  ggtitle("Proteins quantified in each run") +
+  xlab("Runs in order") +
+  ylab("Number proteins") +
+  scale_x_continuous(breaks = seq(0,600,by = 10))+ 
+  scale_y_continuous(breaks = seq(0,7500,by = 500), limits = c(0,7500)) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  theme_bw()
+```
+## PCA extravaganza
+```{r}
+## 30 SPD dot plots
+df_30a <- df_30[,c("originalRUN", "Protein", "LogIntensities")]
+df_30a <- reshape(df_30a, idvar = "originalRUN", timevar = "Protein", direction = "wide")
+rownames(df_30a) <- df_30a$originalRUN
+df_30a$originalRUN <- NULL
+## Have 288 total proteomes for each 30 and 60 SPD. Do they cluster by anything in particular?
+## transpose the matrix so that rows = proteomes (RUN) and columns = variables (Protein) for prcomp
+test <- data.frame(t(na.omit(t(df_30a))))
+pca_30a <- prcomp(na.omit(test), scale = TRUE, center = TRUE)
+# # compute total variance
+var_30a = pca_30a$sdev^2 / sum(pca_30a$sdev^2)
+qplot(c(1:8), var_30a[1:8]) +
+  geom_col()+
+  geom_line() +
+  geom_point() +
+  xlab("Principal Component") +
+  ylab("Variance Explained") +
+  ggtitle("Scree Plot") +
+  ylim(0, 1)
+
+df_pca_30a <- data.frame(originalRUN = rownames(df_30a), 
+                         PC1 = pca_30a$x[,1],
+                         PC2 = pca_30a$x[,2])
+df_pca_30a <- merge(df_id, df_pca_30a, by = "originalRUN")
+df_pca_30a$GROUP_TRUNC <- gsub("_.*$", "", df_pca_30a$GROUP)
+
+## MTOR lol
+## By GROUP
+ggplot(data = df_pca_30a, aes(x = PC1, y = PC2, color = GROUP_TRUNC)) +
+  geom_hline(yintercept = 0, alpha = 0.5) +
+  geom_vline(xintercept = 0, alpha = 0.5) +
+  geom_point() + 
+  scale_color_viridis_d() +
+  xlim(-20,60) +
+  annotate(geom = "text", x = 40, y = -25, label = "MTOR outlier outside graph limits")+
+  theme_bw()
+
+## By GROUP zoomed in 
+ggplot(data = df_pca_30a, aes(x = PC1, y = PC2, color = GROUP_TRUNC)) +
+  geom_hline(yintercept = 0, alpha = 0.5) +
+  geom_vline(xintercept = 0, alpha = 0.5) +
+  geom_point() + 
+  scale_color_viridis_d() +
+  xlim(-20,20) +
+  ylim(-30,50) +
+  theme_bw()
+
+
+## By originalRUN
+ggplot(data = df_pca_30a, aes(x = PC1, y = PC2, color = originalRUN)) +
+  geom_hline(yintercept = 0, alpha = 0.5) +
+  geom_vline(xintercept = 0, alpha = 0.5) +
+  geom_point() + 
+  scale_color_viridis_c() +
+  xlim(-20,60)+
+  theme_bw()
+##originalRUN zoomed in 
+ggplot(data = df_pca_30a, aes(x = PC1, y = PC2, color = originalRUN)) +
+  geom_hline(yintercept = 0, alpha = 0.5) +
+  geom_vline(xintercept = 0, alpha = 0.5) +
+  geom_point() + 
+  scale_color_viridis_c() +
+  xlim(-20,20) +
+  ylim(-30,50) +
+  theme_bw()
+
+## by batch
+ggplot(data = df_pca_30a, aes(x = PC1, y = PC2, color = batch)) +
+  geom_hline(yintercept = 0, alpha = 0.5) +
+  geom_vline(xintercept = 0, alpha = 0.5) +
+  geom_point() + 
+  scale_color_viridis_d(begin = 0.2, end = 0.8) +
+  xlim(-20,20) +
+  ylim(-30,50)+
+  theme_bw()
+
+## by plate
+ggplot(data = df_pca_30a, aes(x = PC1, y = PC2, color = as.factor(plate))) +
+  geom_hline(yintercept = 0, alpha = 0.5) +
+  geom_vline(xintercept = 0, alpha = 0.5) +
+  geom_point() + 
+  scale_color_viridis_d(end = 0.9) +
+  xlim(-20,20) +
+  ylim(-30,50) +
+  labs(color = "Plate")+
+  theme_bw()
+
+## by edge wells
+ggplot(data = df_pca_30a, aes(x = PC1, y = PC2, color = edge_well)) +
+  geom_hline(yintercept = 0, alpha = 0.5) +
+  geom_vline(xintercept = 0, alpha = 0.5) +
+  geom_point() + 
+  scale_color_viridis_d(begin = 0.2,end = 0.8) +
+  xlim(-20,20) +
+  ylim(-30,50) +
+  theme_bw()
+
+## This is from Pierre
+df_id$EP <- NULL
+df_id$X <- NULL
+
+
+# pca_variance_explained <- function(pca,cdesc,components=c(1:10)){
+  #Calculates the percent of variance explained from sample metadata for each principal
+  #component. The calculation is performed by fitting a linear model individually for 
+  #each of the metadata variables
+  #
+  #Args:
+  #	pca: a pca object as generated by PCA
+  #	cdesc: a data.frame indicating the features to color
+  #	components: the components to be correlated. defaults to the first 10
+  #
+  
+  #Obtain the principal component coordinates
+  # p <- data.frame(pca$ind$coord[,components])
+  p <- data.frame(pca_30a$x)
+  p <- p[,c(1:10)]
+  cdesc <- df_id[,c("originalRUN", "GROUP", "target_gene", "batch", "plate", "edge_well")]
+  names(cdesc) <- c("Run_number", "Guide_pairs_by_target_gene", "Target_gene_grouped", "batch", "plate", "Edge_well")
+ 
+  
+  #Intitialize the result data frame
+  data <- data.frame(dims=character(),
+                     pct.exp=numeric(),
+                     experimental.factor = character() )
+  
+  #Loop through all component-metadata combinations 
+  # cdesc <- df_id
+  for(i in colnames(cdesc)){
+    
+    for(j in colnames(p)){
+      
+      # i <- 1
+      # j <- 3
+      #Check if the current metadata vector is valid
+      if( (sum(is.na(cdesc[,i])) == length(cdesc[,i])) |
+          (length(levels(as.factor(cdesc[,i])))<2)       ){
+        next
+      }
+      
+      #Fit a linear model between the principal component and metadata variable
+      fit <- lm(p[,j] ~ cdesc[,i])
+      af <- anova(fit)
+      afss <- af$"Sum Sq"
+      
+      # dimensions <- as.numeric(gsub("Dim\\.","",j))
+      dimensions <- as.numeric(gsub("PC","",j))
+      
+      data <- rbind(data,
+                    data.frame(dims = dimensions,
+                               pct.exp = afss[1]/sum(afss)*100,
+                               experimental.factor=i))
+    }
+  }
+  
+  
+  g <- ggplot(data=data,aes(as.factor(dims),pct.exp,group=experimental.factor,color=experimental.factor)) +
+    geom_line() + geom_point() + labs(x="Component (% Total Variance Explained)",y="% Variance Explaines within Component") + theme_bw()+
+    scale_x_discrete(labels = paste0("PC",data$dims, " (",round(summary(pca_30a)$importance[2,],3)*100,"%)"))+
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    scale_color_viridis_d(begin = 0, end = 0.95) +
+    labs(color = "Experimental Factor")
+  g
+  
+## Now for 60 
+  df_60a <- df_60[,c("originalRUN", "Protein", "LogIntensities")]
+df_60a <- reshape(df_60a, idvar = "originalRUN", timevar = "Protein", direction = "wide")
+rownames(df_60a) <- df_60a$originalRUN
+df_60a$originalRUN <- NULL
+## Have 288 total proteomes for each 60 and 60 SPD. Do they cluster by anything in particular?
+## transpose the matrix so that rows = proteomes (RUN) and columns = variables (Protein) for prcomp
+test <- data.frame(t(na.omit(t(df_60a))))
+## this one is completely zero
+test$LogIntensities.Q8WZ42 <- NULL
+pca_60a <- prcomp(na.omit(test), scale = TRUE, center = TRUE)
+# # compute total variance
+var_60a = pca_60a$sdev^2 / sum(pca_60a$sdev^2)
+qplot(c(1:8), var_60a[1:8]) +
+  geom_col()+
+  geom_line() +
+  geom_point() +
+  xlab("Principal Component") +
+  ylab("Variance Explained") +
+  ggtitle("Scree Plot") +
+  ylim(0, 1)
+
+df_pca_60a <- data.frame(originalRUN = rownames(df_60a), 
+                         PC1 = pca_60a$x[,1],
+                         PC2 = pca_60a$x[,2])
+df_pca_60a <- merge(df_id, df_pca_60a, by = "originalRUN")
+df_pca_60a$GROUP_TRUNC <- gsub("_.*$", "", df_pca_60a$GROUP)
+
+## MTOR lol
+## By GROUP
+ggplot(data = df_pca_60a, aes(x = PC1, y = PC2, color = GROUP_TRUNC)) +
+  geom_hline(yintercept = 0, alpha = 0.5) +
+  geom_vline(xintercept = 0, alpha = 0.5) +
+  geom_point() + 
+  scale_color_viridis_d() +
+  # xlim(-20,60) +
+  annotate(geom = "text", x = 40, y = -25, label = "MTOR outlier outside graph limits")+
+  theme_bw()
+
+## By GROUP zoomed in 
+ggplot(data = df_pca_60a, aes(x = PC1, y = PC2, color = GROUP_TRUNC, label = GROUP_TRUNC)) +
+  geom_hline(yintercept = 0, alpha = 0.5) +
+  geom_vline(xintercept = 0, alpha = 0.5) +
+  geom_point() + 
+  # geom_text() +
+  scale_color_viridis_d() +
+  xlim(-75,125) +
+  ylim(-75,20) +
+  theme_bw()
+
+
+## By originalRUN
+ggplot(data = df_pca_60a, aes(x = PC1, y = PC2, color = originalRUN)) +
+  geom_hline(yintercept = 0, alpha = 0.5) +
+  geom_vline(xintercept = 0, alpha = 0.5) +
+  geom_point() + 
+  scale_color_viridis_c() +
+  xlim(-75,125) +
+  ylim(-75,20) +
+  theme_bw()
+##originalRUN zoomed in 
+ggplot(data = df_pca_60a, aes(x = PC1, y = PC2, color = originalRUN)) +
+  geom_hline(yintercept = 0, alpha = 0.5) +
+  geom_vline(xintercept = 0, alpha = 0.5) +
+  geom_point() + 
+  scale_color_viridis_c() +
+  xlim(-75,125) +
+  ylim(-25,20) +
+  theme_bw()
+
+## by batch
+ggplot(data = df_pca_60a, aes(x = PC1, y = PC2, color = batch)) +
+  geom_hline(yintercept = 0, alpha = 0.5) +
+  geom_vline(xintercept = 0, alpha = 0.5) +
+  geom_point() + 
+  scale_color_viridis_d(begin = 0.2, end = 0.8) +
+  xlim(-75,125) +
+  ylim(-25,20) +
+  theme_bw()
+
+## by plate
+ggplot(data = df_pca_60a, aes(x = PC1, y = PC2, color = as.factor(plate))) +
+  geom_hline(yintercept = 0, alpha = 0.5) +
+  geom_vline(xintercept = 0, alpha = 0.5) +
+  geom_point() + 
+  scale_color_viridis_d(end = 0.9) +
+  xlim(-75,125) +
+  ylim(-25,20) +
+  labs(color = "Plate")+
+  theme_bw()
+
+## by edge wells
+ggplot(data = df_pca_60a, aes(x = PC1, y = PC2, color = edge_well)) +
+  geom_hline(yintercept = 0, alpha = 0.5) +
+  geom_vline(xintercept = 0, alpha = 0.5) +
+  geom_point() + 
+  scale_color_viridis_d(begin = 0.2,end = 0.8) +
+  xlim(-75,125) +
+  ylim(-25,20) +
+  theme_bw()
+
+# pca_variance_explained <- function(pca,cdesc,components=c(1:10)){
+  #Calculates the percent of variance explained from sample metadata for each principal
+  #component. The calculation is performed by fitting a linear model individually for 
+  #each of the metadata variables
+  #
+  #Args:
+  #	pca: a pca object as generated by PCA
+  #	cdesc: a data.frame indicating the features to color
+  #	components: the components to be correlated. defaults to the first 10
+  #
+  
+  #Obtain the principal component coordinates
+  # p <- data.frame(pca$ind$coord[,components])
+  p <- data.frame(pca_60a$x)
+  p <- p[,c(1:10)]
+  cdesc <- df_id[,c("originalRUN", "GROUP", "target_gene", "batch", "plate", "edge_well")]
+  names(cdesc) <- c("Run_number", "Guide_pairs_by_target_gene", "Target_gene_grouped", "batch", "plate", "Edge_well")
+ 
+  
+  #Intitialize the result data frame
+  data <- data.frame(dims=character(),
+                     pct.exp=numeric(),
+                     experimental.factor = character() )
+  
+  #Loop through all component-metadata combinations 
+  # cdesc <- df_id
+  for(i in colnames(cdesc)){
+    
+    for(j in colnames(p)){
+      
+      # i <- 1
+      # j <- 3
+      #Check if the current metadata vector is valid
+      if( (sum(is.na(cdesc[,i])) == length(cdesc[,i])) |
+          (length(levels(as.factor(cdesc[,i])))<2)       ){
+        next
+      }
+      
+      #Fit a linear model between the principal component and metadata variable
+      fit <- lm(p[,j] ~ cdesc[,i])
+      af <- anova(fit)
+      afss <- af$"Sum Sq"
+      
+      # dimensions <- as.numeric(gsub("Dim\\.","",j))
+      dimensions <- as.numeric(gsub("PC","",j))
+      
+      data <- rbind(data,
+                    data.frame(dims = dimensions,
+                               pct.exp = afss[1]/sum(afss)*100,
+                               experimental.factor=i))
+    }
+  }
+  
+  
+  g <- ggplot(data=data,aes(as.factor(dims),pct.exp,group=experimental.factor,color=experimental.factor)) +
+    geom_line() + geom_point() + labs(x="Component (% Total Variance Explained)",y="% Variance Explaines within Component") + theme_bw()+
+    scale_x_discrete(labels = paste0("PC",data$dims, " (",round(summary(pca_60a)$importance[2,],3)*100,"%)"))+
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    scale_color_viridis_d(begin = 0, end = 0.95) +
+    labs(color = "Experimental Factor")
+  g
+```
+
+## Quality control
+Phew. Now that we have that all done, we can look at QC metrics for 30 SPD.
+```{r}
+## read in Max's list. This is not stable, just the Max list merging.
+df_max_list <- read.csv("./data/Ensemble ID_Portfolio List.csv",header = T, na.strings = c("NA", "NaN", "na", "Null", "NULL", "null", "FALSE", ""))
+df_max_list <- df_max_list[which(!is.na(df_max_list$Gene.gRNA.number)),]
+df_max_uniprot <- read.table("./data/AP05_Maxlist_idmapping_reviewed_true_2024_11_14.tsv", sep = "\t", header = TRUE)
+names(df_max_uniprot)[names(df_max_uniprot)=="From"] <- "Ensembl_ID"
+df_portfolio_names <- merge(df_max_list, df_max_uniprot, by = "Ensembl_ID", all.x = TRUE)
+## THIS WILL NOT WORK IN THE FUTURE
+vec_list_KO <- gsub("-.*$", "", names(table(df_comp_30$Label)))
+
+df_guidenames_temp <- data.frame(Gene.Names..primary. = gsub("-.*$", "", names(table(df_comp_30$Label))),
+                                 Label = names(table(df_comp_30$Label)))
+df_guidenames_temp$Gene.Names..primary. <- substr(df_guidenames_temp$Gene.Names..primary., start = 0, stop = (nchar(df_guidenames_temp$Gene.Names..primary.)-5))
+
+df_portfolio_names <- merge(df_portfolio_names, df_guidenames_temp, by = "Gene.Names..primary.", all.x = T)
+names(df_portfolio_names)[names(df_portfolio_names)=="Entry"] <- "Protein"
+df_portfolio_actual <- unique(df_portfolio_names[,c("Protein", "Label")])
+df_portfolio_actual$guide_pair <- gsub("-.*$", "", df_portfolio_actual$Label)
+df_portfolio_actual$guide_pair <- gsub("^.*_", "", df_portfolio_actual$guide_pair)
+names(df_portfolio_actual)[names(df_portfolio_actual)=="Protein"] <- "ProteinID_KO"
+## first pull in Gene Symbols
+df_up <- read.table("./data/uniprotkb_Human_AND_model_organism_9606_2024_10_21.tsv", sep = "\t", header = T, na.strings = c("NA", "NULL", "Null", "null", "NaN"), fill = T, quote = "")
+names(df_up)[which(names(df_up)=="Entry")] <- "Protein" 
+df_comp_30 <- merge(df_up, df_comp_30, by = "Protein")
+df_comp_30 <- merge(df_comp_30, df_portfolio_actual, by = "Label", all.x = T)
+
+## Assign a variable that IDs each portfolio target by name
+df_comp_30$Portfolio <- ifelse(df_comp_30$Protein %in% df_portfolio_names$Entry, df_comp_30$Gene.Names..primary., NA)
+## also a binary portfolio variable
+df_comp_30$Portfolio_binary <- ifelse(df_comp_30$Protein %in% df_portfolio_names$Entry, "Portfolio", "Other")
+## Fix FGFR problem
+df_comp_30$ProteinID_KO <- ifelse(is.na(df_comp_30$ProteinID_KO), "P11362", df_comp_30$ProteinID_KO)
+
+## change the number for vec_control_conditions to peruse the different control conditions/denominators
+df_comp_30_plot1 <- df_comp_30[grep(paste0("-",vec_control_conditions[1], "$"), df_comp_30$Label),]
+df_comp_30_plot2 <- df_comp_30[which(df_comp_30$Protein==df_comp_30$ProteinID_KO & grepl(paste0("-",vec_control_conditions[1], "$"), df_comp_30$Label)),]
+ggplot() +
+  geom_hline(yintercept = 0) +
+  geom_hline(yintercept = log2(0.5), alpha = 0.5, linetype = "dashed") +
+  ## brain is breaking here
+  # geom_hline(yintercept = log2(75/100), alpha = 0.5, linetype = "dotted") +
+  geom_boxplot(data = df_comp_30_plot1, aes(x = Label, y = log2FC, group = Label, fill = Label), outlier.alpha = 0.2) +
+  geom_point(data = df_comp_30_plot2, aes(x = Label, y = log2FC, fill = Label), color= "gray", shape = 23, size = 5) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  scale_fill_viridis_d(guide = "none") +
+  scale_y_continuous(breaks = seq(-10,8,by = 2), limits = c(-9,8)) +
+  scale_x_discrete(labels = unique(gsub("-.*$", "", names(table(df_comp_30_plot1$Label))))) +
+  ## this very long string just pulls the last label from the x axis
+  # geom_text(aes(x = unique(gsub("-.*$", "", names(table(df_comp_30_plot1$Label))))[length(unique(gsub("-.*$", "", names(table(df_comp_30_plot1$Label)))))+1], y = 6, label = paste0(gsub("^.*-", "", names(table(df_comp_30_plot1$Label)[1])), "\n is control")), hjust = 1)
+  annotate("text", x = length(names(table(df_comp_30_plot1$Label)))-3, y = 6, label = paste0(gsub("^.*-", "", names(table(df_comp_30_plot1$Label)[1])), "\n is control")) 
+```
+
+## Quality control for 60 SPD
+```{r}
+## read in Max's list
+df_max_list <- read.csv("./data/Ensemble ID_Portfolio List.csv",header = T, na.strings = c("NA", "NaN", "na", "Null", "NULL", "null", "FALSE", ""))
+df_max_list <- df_max_list[which(!is.na(df_max_list$Gene.gRNA.number)),]
+df_max_uniprot <- read.table("/data/AP05_Maxlist_idmapping_reviewed_true_2024_11_14.tsv", sep = "\t", header = TRUE)
+names(df_max_uniprot)[names(df_max_uniprot)=="From"] <- "Ensembl_ID"
+df_portfolio_names <- merge(df_max_list, df_max_uniprot, by = "Ensembl_ID", all.x = TRUE)
+## THIS WILL NOT WORK IN THE FUTURE
+vec_list_KO <- gsub("-.*$", "", names(table(df_comp_60$Label)))
+
+df_guidenames_temp <- data.frame(Gene.Names..primary. = gsub("-.*$", "", names(table(df_comp_60$Label))),
+                                 Label = names(table(df_comp_60$Label)))
+df_guidenames_temp$Gene.Names..primary. <- substr(df_guidenames_temp$Gene.Names..primary., start = 0, stop = (nchar(df_guidenames_temp$Gene.Names..primary.)-5))
+
+df_portfolio_names <- merge(df_portfolio_names, df_guidenames_temp, by = "Gene.Names..primary.", all.x = T)
+names(df_portfolio_names)[names(df_portfolio_names)=="Entry"] <- "Protein"
+df_portfolio_actual <- unique(df_portfolio_names[,c("Protein", "Label")])
+df_portfolio_actual$guide_pair <- gsub("-.*$", "", df_portfolio_actual$Label)
+df_portfolio_actual$guide_pair <- gsub("^.*_", "", df_portfolio_actual$guide_pair)
+names(df_portfolio_actual)[names(df_portfolio_actual)=="Protein"] <- "ProteinID_KO"
+## first pull in Gene Symbols
+df_up <- read.table("/data/uniprotkb_Human_AND_model_organism_9606_2024_10_21.tsv", sep = "\t", header = T, na.strings = c("NA", "NULL", "Null", "null", "NaN"), fill = T, quote = "")
+names(df_up)[which(names(df_up)=="Entry")] <- "Protein" 
+df_comp_60 <- merge(df_up, df_comp_60, by = "Protein")
+df_comp_60 <- merge(df_comp_60, df_portfolio_actual, by = "Label", all.x = T)
+
+## Assign a variable that IDs each portfolio target by name
+df_comp_60$Portfolio <- ifelse(df_comp_60$Protein %in% df_portfolio_names$Entry, df_comp_60$Gene.Names..primary., NA)
+## also a binary portfolio variable
+df_comp_60$Portfolio_binary <- ifelse(df_comp_60$Protein %in% df_portfolio_names$Entry, "Portfolio", "Other")
+## Fix FGFR problem
+df_comp_60$ProteinID_KO <- ifelse(is.na(df_comp_60$ProteinID_KO), "P11362", df_comp_60$ProteinID_KO)
+
+## change the number for vec_control_conditions to peruse the different control conditions/denominators
+df_comp_60_plot1 <- df_comp_60[grep(paste0("-",vec_control_conditions[1], "$"), df_comp_60$Label),]
+df_comp_60_plot2 <- df_comp_60[which(df_comp_60$Protein==df_comp_60$ProteinID_KO & grepl(paste0("-",vec_control_conditions[1], "$"), df_comp_60$Label)),]
+ggplot() +
+  geom_hline(yintercept = 0) +
+  geom_hline(yintercept = log2(0.5), alpha = 0.5, linetype = "dashed") +
+  ## brain is breaking here
+  # geom_hline(yintercept = log2(75/100), alpha = 0.5, linetype = "dotted") +
+  geom_boxplot(data = df_comp_60_plot1, aes(x = Label, y = log2FC, group = Label, fill = Label), outlier.alpha = 0.2) +
+  geom_point(data = df_comp_60_plot2, aes(x = Label, y = log2FC, fill = Label), color= "gray", shape = 23, size = 5) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  scale_fill_viridis_d(guide = "none") +
+  scale_y_continuous(breaks = seq(-10,8,by = 2), limits = c(-9,8)) +
+  scale_x_discrete(labels = unique(gsub("-.*$", "", names(table(df_comp_60_plot1$Label))))) +
+  ## this very long string just pulls the last label from the x axis
+  # geom_text(aes(x = unique(gsub("-.*$", "", names(table(df_comp_60_plot1$Label))))[length(unique(gsub("-.*$", "", names(table(df_comp_60_plot1$Label)))))+1], y = 6, label = paste0(gsub("^.*-", "", names(table(df_comp_60_plot1$Label)[1])), "\n is control")), hjust = 1)
+  annotate("text", x = length(names(table(df_comp_60_plot1$Label)))-3, y = 6, label = paste0(gsub("^.*-", "", names(table(df_comp_60_plot1$Label)[1])), "\n is control")) 
+```
+## How many proteins were quantified in 30 vs. 60 SPD?
+```{r}
+## Total numbers of proteins quantified. venn diagrams of proteins in common. Internal variability. Pathways, bleh. How many significant hits for both. 
+## a dataframe like "number prots 30", "n prots 60", "n prots in common", "n prots sig 30", "n prots sig 60", "% portfolio coverage 30", "% portfolio coverage 60",. Should we do averages? Medians? Medians prob. Liang mentioned examining low abundance proteins. 
+
+## create some labels by using summary stats
+# df_summary <- df_control_tmt %>%
+#   group_by(sample_condition, gene_symbol) %>%
+#   summarize(mean = mean(log2_tmt_ratio), sd = sd(log2_tmt_ratio), n = n(), se = sd(log2_tmt_ratio)/sqrt(length(log2_tmt_ratio)))
+
+
+df_groupnames_30$Run_type <- "30SPD"
+df_groupnames_60$Run_type <- "60SPD"
+df_groupnames_30_60 <- rbind(df_groupnames_30, df_groupnames_60)
+
+df_groupnames_30_60_summary <- df_groupnames_30_60 %>%
+  group_by(Run_type) %>%
+  summarize(mean = mean(n_Proteins), median = median(n_Proteins), sd = sd(n_Proteins), var = var(n_Proteins))
+
+ggplot(data = df_groupnames_30_60, aes(x = n_Proteins, group = Run_type, fill = Run_type, color = Run_type)) +
+  geom_histogram(binwidth = 25, position = "dodge", alpha = 0.5) +
+  xlim(4800,5800) +
+  scale_fill_viridis_d(end = 0.7) +
+  scale_color_viridis_d(end = 0.7, guide = "none") +
+  geom_vline(data = df_groupnames_30_60_summary, aes(xintercept = median, color = Run_type), linetype = "dotted" ) +
+  geom_text(data = df_groupnames_30_60_summary, aes(x = median, y = 150, label = 
+                                                      paste0("median = ", round(median, digits = 0), "\n",
+                                                        "sd = ", round(sd, digits = 0), "\n",
+                                                        "(mean = ", round(mean, digits = 0), ")")
+                                                    ), hjust = 1.1, size = 2, vjust = 1, show.legend = FALSE) +
+  ylab("Count") +
+  xlab("n Proteins per sample") +
+  labs(fill = "Run type") +
+  theme_bw() +
+  annotate(geom = "text", x = 5000, y = 25, label = "MTOR < 3000 removed", size = 2, alpha = 0.5)
+
+
+## Venn diagrams of proteins in common for all AAVS1 (+HPRT) runs since there are 24
+## For each GROUP, we could find number overlap, number unique to 30, number unique to 60
+vec_unique_groups_nofactor <- as.character(vec_unique_groups)
+
+vec_overlap_total <- rep(NA, length(vec_unique_groups_nofactor))
+vec_unique_30 <- rep(NA, length(vec_unique_groups_nofactor))
+vec_unique_60 <- rep(NA, length(vec_unique_groups_nofactor))
+
+
+for (i in 1:length(vec_unique_groups_nofactor)) {
+  # i <- 2
+  a <- unique(df_30$Protein[which(df_30$GROUP==vec_unique_groups_nofactor[i])])
+  length(a)
+  ##5797
+  b <- unique(df_60$Protein[which(df_60$GROUP==vec_unique_groups_nofactor[i])])
+  length(b)
+  ##5702
+  # vec_30_60_overlap <- a[(a %in% b)]
+  vec_overlap_total[i] <- length(a[(a %in% b)])
+  ## 5152
+  # vec_30_nonoverlap <- setdiff(vec_30_aavs, vec_60_aavs)
+  vec_unique_30[i] <- length(setdiff(a, b))
+  ## 645
+  # vec_60_nonoverlap <- setdiff(vec_60_aavs, vec_30_aavs)
+  vec_unique_60[i] <- length(setdiff(b,a))
+  ## 550
+}
+
+df_30_60_venn <- data.frame(GROUP = vec_unique_groups_nofactor, Overlap = vec_overlap_total, Unique_30 = vec_unique_30, Unique_60 = vec_unique_60)
+df_30_60_venn2 <- reshape(df_30_60_venn, direction= "long", varying = c("Overlap", "Unique_30", "Unique_60"), v.names = "Value", idvar = "GROUP", timevar = "Category", times = c("Overlap", "Unique_30", "Unique_60"))
+df_30_60_venn2$target_gene <- gsub("_.*$", "", df_30_60_venn2$GROUP)
+# ggplot(data = df_30_60_venn2[df_30_60_venn2$Category=="Overlap",], aes(x = Value)) +
+#   geom_histogram(binwidth = 1)
+# ggplot(data = df_30_60_venn2[df_30_60_venn2$Category=="Unique_30",], aes(x = Value)) +
+#   geom_histogram(binwidth = 1)
+# ggplot(data = df_30_60_venn2[df_30_60_venn2$Category=="Unique_60",], aes(x = Value)) +
+#   geom_histogram(binwidth = 1)
+
+ggplot(df_30_60_venn2) +
+  geom_boxplot(aes(x = Category, y = Value)) +
+  geom_point(aes(x = Category, y = Value, color = target_gene, label = target_gene)) +
+  scale_color_viridis_d() +
+  ggforce::facet_zoom(ylim = c(500,675))
+  # + ggforce::facet_zoom(ylim = c(5100,5175))
+
+ggplot(df_30_60_venn2[which(df_30_60_venn2$Category %in% c("Unique_30", "Unique_60")),]) +
+  geom_boxplot(aes(x = Category, y = Value)) +
+  geom_point(aes(x = Category, y = Value, color = target_gene), position = "jitter") +
+  scale_color_viridis_d() +
+  # ggforce::facet_zoom(ylim = c(500,675))
+  ylim( c(510,650))
+
+
+## Now waterfall plot of per GROUP x axis = abundance/intensity, y = 30 compared to 60 (30/60)
+## for loop to iterate through each protein per GROUP. x = avg. LogIntensity across runs, y = ratio 30/60
+df_30$Run_type <- "30SPD"
+df_60$Run_type <- "60SPD"
+df_30_60 <- rbind(df_30, df_60)
+
+## Kind of bootstrapping estiamtes here, but not sure how else to do it for these particular cell lines
+df_30_60_abundances <- df_30_60 %>%
+  group_by(Protein) %>%
+  summarize(Estimated_abundance = mean(LogIntensities))
+
+df_30_60_abundances$Portfolio_gene <- ifelse(df_30_60_abundances$Protein %in% vec_KO_genes, "Portfolio", "Other")
+## 12 Portfolio genes quantified across all runs
+## 6,359 total abundances measured.
+## Want a graph where x axis = "true abundance" as measured by df_30_60_abundances
+## Versus number runs the protein was captured == y axis
+df_30_captured_runs <- as.data.frame(table(df_30$Protein))
+df_30_captured_runs$Run_type <- "30SPD"
+df_60_captured_runs <- as.data.frame(table(df_60$Protein))
+df_60_captured_runs$Run_type <- "60SPD"
+
+df_30_60_captured_runs <- merge(df_30_captured_runs, df_60_captured_runs,by = "Var1", all = TRUE)
+names(df_30_60_captured_runs)[names(df_30_60_captured_runs)=="Var1"] <- "Protein"
+df_30_60_captured_runs <- merge(df_30_60_captured_runs, df_30_60_abundances, by = "Protein", all= TRUE)
+## 144 runs for each 30 adn 60 SPD, so total 288 runs is max
+## 30 - 60 SPD for positive value if more in 30, negative value if more in 60 runs
+df_30_60_captured_runs$Difference <- df_30_60_captured_runs$Freq.x - df_30_60_captured_runs$Freq.y
+## Put this in order of Difference between runs
+# df_30_60_captured_runs <- df_30_60_captured_runs[order(df_30_60_captured_runs$Difference),]
+# df_30_60_captured_runs$Estimated_abundance <- factor(df_30_60_captured_runs$Estimated_abundance, levels = df_30_60_captured_runs$Estimated_abundance)
+
+ggplot(data = df_30_60_captured_runs, aes(x = Estimated_abundance, y = Difference, fill = as.numeric(Estimated_abundance))) +
+  geom_bar(position = "dodge", stat = "identity") +
+  scale_fill_viridis_c()
+
+## This is not coloring correctly
+ggplot(data = df_30_60_captured_runs, aes(x = Estimated_abundance, y = Difference, color = as.numeric(Estimated_abundance))) +
+  geom_point() +
+  scale_color_viridis_c()
+
+## Bin it!!! Then boxplot or violin plot + geom_point() on top
+df_30_60_captured_runs$Estimated_abundance_bin <- cut(df_30_60_captured_runs$Estimated_abundance, breaks = c(0:9, 15))
+
+ggplot(data = df_30_60_captured_runs, aes(x = Estimated_abundance_bin, y = Difference, color = as.numeric(Estimated_abundance_bin))) +
+  geom_boxplot(outlier.alpha = 0.5) +
+  scale_color_viridis_c(end = 0.9) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5)) +
+  facet_zoom(ylim = c(-10,10)) +
+  labs(color = "Log2(Est. abund.)") +
+  xlab("Log2(Estimated Abundances)") +
+  ylab("Protein quant in (Number runs 30) - \n (Number runs 60)")
+
+
+
+# df_30_60_summary <- df_30_60 %>%
+#   group_by(Protein, Run_type) %>%
+#   summarize(mean = mean(LogIntensities))
+
+# df_30_60_summary_overlap <- df_30_60_summary[(duplicated(df_30_60_summary$Protein, fromLast = T)|duplicated(df_30_60_summary$Protein, fromLast = F)),]
+# df_30_60_summary_unique <- df_30_60_summary[!(duplicated(df_30_60_summary$Protein, fromLast = T)|duplicated(df_30_60_summary$Protein, fromLast = F)),]
+# df_30_60_summary_overlap[] <- lapply(df_30_60_summary_overlap, function(x) if(is.factor(x)) as.character(x) else x)
+# df_30_60_summary_overlap_wide <- reshape(as.data.frame(df_30_60_summary_overlap),  idvar = "Protein", timevar = "Run_type", direction = "wide")
+# df_30_60_summary_overlap_wide$Ratio <- df_30_60_summary_overlap_wide$mean.30SPD/df_30_60_summary_overlap_wide$mean.60SPD
+# 
+# ggplot(data = df_30_60_summary_overlap_wide, aes(x = mean.30SPD, y = log2(Ratio))) +
+#   geom_point()
+
+## Create the table for portfolio genes only
+# df_temp <- subset(df_30_60_captured_runs, Portfolio_gene == "Portfolio")
+# # names(df_temp)[names(df_temp)=="Protein"] <- "Entry"
+# # df_temp <- merge(df_temp, df_portfolio_names[,c("Entry", "Gene.Names..primary."),], by = "Entry")
+# df_temp <- merge(df_temp, df_portfolio_names[,c("Entry", "Gene.Names..primary."),], by = "Protein")
+# # write.csv(df_temp, "./df_30_60_captured_runs_Portfolio.csv")
+# 
+# 
+# df_portfolio_id_genenames <- unique(df_portfolio_names[,c("Protein", "Gene.Names..primary.")])
+# ## This might be dropping some proteins.
+# ## Do it from original df_30 and df_60
+# df_30_portfolio_runs <- as.data.frame(table(df_30$Protein[which(df_30$Protein %in% vec_KO_genes)]))
+# df_30_portfolio_runs <- df_30_portfolio_runs[which(df_30_portfolio_runs$Freq > 0),]
+# names(df_30_portfolio_runs)[names(df_30_portfolio_runs)=="Var1"] <- "Protein"
+# df_30_portfolio_runs <- merge(df_30_portfolio_runs, df_portfolio_id_genenames, by = "Protein", all.x = T)
+# df_60_portfolio_runs <- as.data.frame(table(df_60$Protein[which(df_60$Protein %in% vec_KO_genes)]))
+# df_60_portfolio_runs <- df_60_portfolio_runs[which(df_60_portfolio_runs$Freq > 0),]
+# names(df_60_portfolio_runs)[names(df_60_portfolio_runs)=="Var1"] <- "Protein"
+# df_60_portfolio_runs <- merge(df_60_portfolio_runs, df_portfolio_id_genenames, by = "Protein", all.x = T)
+```
+
+## We want to know how many proteins' abundances are significantly changing in 30 vs. 60 SPD
+```{r}
+## ask how many proteins are significantly changing at the 5% FDR for each control condition
+
+## create a dataframe to fill
+df_30_60_signif <- data.frame(Control = rep(NA, length(vec_experimental_conditions)),
+                              Experimental = rep(NA, length(vec_experimental_conditions)),
+                              Signif_30 = rep(NA, length(vec_experimental_conditions)),
+                              Signif_60 = rep(NA, length(vec_experimental_conditions)),
+                              Percent_30 = rep(NA, length(vec_experimental_conditions)),
+                              KO_30_log2FC = rep(NA, length(vec_experimental_conditions)),
+                              KO_60_log2FC = rep(NA, length(vec_experimental_conditions)))
+list_df_30_60_signif <- vector("list", length = length(vec_control_conditions))
+for (i in 1:length(vec_control_conditions)) {
+  list_df_30_60_signif[[i]] <- df_30_60_signif
+}
+## set alpha level
+alpha <- 0.05
+for (j in 1:length(vec_control_conditions)) {
+  for (i in 1:length(vec_experimental_conditions)) {
+    df_plot_comp_30 <- df_comp_30[which(grepl(vec_control_conditions[j], df_comp_30$Label) & grepl(vec_experimental_conditions[i], df_comp_30$Label) & is.na(df_comp_30$issue)) ,]
+    df_plot_comp_60 <- df_comp_60[which(grepl(vec_control_conditions[j], df_comp_60$Label) & grepl(vec_experimental_conditions[i], df_comp_60$Label) & is.na(df_comp_60$issue)) ,]
+    list_df_30_60_signif[[j]][i,c("Control")] <- vec_control_conditions[j]
+    list_df_30_60_signif[[j]][i,c("Experimental")] <- vec_experimental_conditions[i]
+    list_df_30_60_signif[[j]][i,c("Signif_30")] <- nrow(df_plot_comp_30[which(df_plot_comp_30$adj.pvalue < alpha),])
+    list_df_30_60_signif[[j]][i,c("Signif_60")] <- nrow(df_plot_comp_60[which(df_plot_comp_60$adj.pvalue < alpha),])
+    list_df_30_60_signif[[j]][i, c("Percent_30")] <- list_df_30_60_signif[[j]][i,c("Signif_60")]/list_df_30_60_signif[[j]][i,c("Signif_30")]
+    list_df_30_60_signif[[j]][i,c("KO_30_log2FC")] <- ifelse(length(!is.na(df_plot_comp_30[which(df_plot_comp_30$ProteinID_KO==df_plot_comp_30$Protein),c("log2FC")]))>0, df_plot_comp_30[which(df_plot_comp_30$ProteinID_KO==df_plot_comp_30$Protein),c("log2FC")], NA)
+    list_df_30_60_signif[[j]][i,c("KO_60_log2FC")] <- ifelse(length(!is.na(df_plot_comp_60[which(df_plot_comp_60$ProteinID_KO==df_plot_comp_60$Protein),c("log2FC")]))>0, df_plot_comp_60[which(df_plot_comp_60$ProteinID_KO==df_plot_comp_60$Protein),c("log2FC")], NA)
+  }
+}
+View(list_df_30_60_signif[[1]])
+
+df_30_60_signif_all <- do.call(rbind, list_df_30_60_signif)
+if (!file.exists("./output/df_30_60_signif_all.csv")
+  write.csv(df_30_60_signif_all, "./output/df_30_60_signif_all.csv")
+
+#### Also want this for Joe's specific list
+vec_Joe_list <- c("P62736", "Q01995", "P02751", "P05121", 
+                  "P29474","P35968",
+                  "P19320", "P05362",
+                  "P16284", "P33151", "Q02763", "P04275")
+df_comp_30$ProteinID_Joe <- ifelse(df_comp_30$Protein %in% vec_Joe_list, df_comp_30$Protein, NA)
+## Captured 11 in 30 SPD
+df_comp_60$ProteinID_Joe <- ifelse(df_comp_60$Protein %in% vec_Joe_list, df_comp_60$Protein, NA)
+## Captured 10 in 60 SPD
+## ask how many proteins are significantly changing at the 5% FDR for each control condition
+
+## create a dataframe to fill
+df_30_60_signif_joe <- data.frame(Control = rep(NA, length(vec_experimental_conditions)),
+                              Experimental = rep(NA, length(vec_experimental_conditions)),
+                              signif_joe_30 = rep(NA, length(vec_experimental_conditions)),
+                              signif_joe_60 = rep(NA, length(vec_experimental_conditions)),
+                              Percent_30 = rep(NA, length(vec_experimental_conditions)),
+                              KO_30_log2FC = rep(NA, length(vec_experimental_conditions)),
+                              KO_60_log2FC = rep(NA, length(vec_experimental_conditions)))
+list_df_30_60_signif_joe <- vector("list", length = length(vec_control_conditions))
+for (i in 1:length(vec_control_conditions)) {
+  list_df_30_60_signif_joe[[i]] <- df_30_60_signif_joe
+}
+## set alpha level
+alpha <- 0.05
+for (j in 1:length(vec_control_conditions)) {
+  for (i in 1:length(vec_experimental_conditions)) {
+    df_plot_comp_30 <- df_comp_30[which(grepl(vec_control_conditions[j], df_comp_30$Label) & grepl(vec_experimental_conditions[i], df_comp_30$Label) & is.na(df_comp_30$issue)) ,]
+    df_plot_comp_60 <- df_comp_60[which(grepl(vec_control_conditions[j], df_comp_60$Label) & grepl(vec_experimental_conditions[i], df_comp_60$Label) & is.na(df_comp_60$issue)) ,]
+    list_df_30_60_signif_joe[[j]][i,c("Control")] <- vec_control_conditions[j]
+    list_df_30_60_signif_joe[[j]][i,c("Experimental")] <- vec_experimental_conditions[i]
+    list_df_30_60_signif_joe[[j]][i,c("signif_joe_30")] <- nrow(df_plot_comp_30[which(df_plot_comp_30$adj.pvalue < alpha & !is.na(df_plot_comp_30$ProteinID_Joe)),])
+    list_df_30_60_signif_joe[[j]][i,c("signif_joe_60")] <- nrow(df_plot_comp_60[which(df_plot_comp_60$adj.pvalue < alpha& !is.na(df_plot_comp_30$ProteinID_Joe)),])
+    list_df_30_60_signif_joe[[j]][i, c("Percent_30")] <- list_df_30_60_signif_joe[[j]][i,c("signif_joe_60")]/list_df_30_60_signif_joe[[j]][i,c("signif_joe_30")]
+    list_df_30_60_signif_joe[[j]][i,c("KO_30_log2FC")] <- ifelse(length(!is.na(df_plot_comp_30[which(df_plot_comp_30$ProteinID_KO==df_plot_comp_30$Protein),c("log2FC")]))>0, df_plot_comp_30[which(df_plot_comp_30$ProteinID_KO==df_plot_comp_30$Protein),c("log2FC")], NA)
+    list_df_30_60_signif_joe[[j]][i,c("KO_60_log2FC")] <- ifelse(length(!is.na(df_plot_comp_60[which(df_plot_comp_60$ProteinID_KO==df_plot_comp_60$Protein),c("log2FC")]))>0, df_plot_comp_60[which(df_plot_comp_60$ProteinID_KO==df_plot_comp_60$Protein),c("log2FC")], NA)
+  }
+}
+View(list_df_30_60_signif_joe[[1]])
+
+df_30_60_signif_joe_all <- do.call(rbind, list_df_30_60_signif_joe)
+if (!file.exists("./output/df_30_60_signif_joe.csv")
+  write.csv(df_30_60_signif_joe, "./output/df_30_60_signif_joe.csv")
+```
+## Individual Volcano Plots
+These were cherry picked as > 50 significantly changing proteins
+```{r}
+## Proteins whose significantly changing proteins > 50 
+# 1 ACVRL1_G1G2
+# 11 ERG_G3G4
+# 12 FGFR_G1G2
+# 20 KLF2_G3G4
+# 21 MTOR_G3G4
+# 25 PTPRB_G1G2
+cbPalette <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+## set thresholds
+num_control_i <- 1
+num_experimental_i <-  1
+alpha <- 0.05
+num_log2fc_threshold <- 1
+
+## 30 SPD
+df_plot_comp_30 <- df_comp_30[which(grepl(vec_control_conditions[num_control_i], df_comp_30$Label) & grepl(vec_experimental_conditions[num_experimental_i], df_comp_30$Label) & is.na(df_comp_30$issue)) ,]
+
+df_plot_comp_30$KO_gene <- ifelse(df_plot_comp_30$Protein==df_plot_comp_30$ProteinID_KO, "KO", "other")
+## assign pvals that are 0 something close to zero so we can visualize them
+set.seed(22)
+df_plot_comp_30$adj.pvalue_edit <- ifelse(df_plot_comp_30$adj.pvalue < 2e-16, 1e-15, df_plot_comp_30$adj.pvalue)
+## also make some labels
+df_plot_comp_30$plot_label <- ifelse(df_plot_comp_30$adj.pvalue_edit < alpha & abs(df_plot_comp_30$log2FC) > num_log2fc_threshold, df_plot_comp_30$Gene.Names..primary., NA )
+df_plot_comp_30$Significant <- ifelse(!is.na(df_plot_comp_30$plot_label), "yes", "no")
+
+vec_plot_colors <- c("no"="#999999", "yes" = "#D55E00", "KO" = "#56B4E9")
+ggplot() +
+  geom_hline(yintercept = -log10(alpha), alpha = 0.5, linetype = "dotted") +
+  geom_point(data = df_plot_comp_30[which(df_plot_comp_30$Significant=="no"),], aes(x = log2FC, y = -log10(adj.pvalue_edit), color = "no") , alpha = 0.5) +
+  geom_point(data = df_plot_comp_30[which(df_plot_comp_30$Significant=="yes"),], aes(x = log2FC, y = -log10(adj.pvalue_edit), color = "yes"), alpha = 1) +
+  geom_point(data = df_plot_comp_30[which(df_plot_comp_30$KO_gene=="KO"),], aes(x = log2FC, y = -log10(adj.pvalue_edit), color = "KO"), size = 2, show.legend = TRUE) +
+  ggrepel::geom_label_repel(data = df_plot_comp_30[which(df_plot_comp_30$Significant=="yes"),], aes(x = log2FC, y = -log10(adj.pvalue_edit), label = plot_label, color = "yes"), show.legend = FALSE) +
+  ggrepel::geom_label_repel(data = df_plot_comp_30[which(df_plot_comp_30$KO_gene=="KO"),], aes(x = log2FC, y = -log10(adj.pvalue_edit), label = plot_label, color = "KO"), show.legend = FALSE) +
+  scale_x_continuous(breaks = seq(-8,8, by = 2), limits = c(-8,8))+
+  ylim(0,15.5) +
+  scale_color_manual(name = "Significance", values = vec_plot_colors) +
+  annotate(geom = "text", x = -7, y = 3, label = paste0("Sigificance:\n", "abs(Log2FC) > ", num_log2fc_threshold, "\nalpha < ", alpha), size = 4) +
+  ggtitle(paste0(vec_experimental_conditions[num_experimental_i], " vs. ", vec_control_conditions[num_control_i]))
+
+## For 60 spd
+df_plot_comp_60 <- df_comp_60[which(grepl(vec_control_conditions[num_control_i], df_comp_60$Label) & grepl(vec_experimental_conditions[num_experimental_i], df_comp_60$Label) & is.na(df_comp_60$issue)) ,]
+
+df_plot_comp_60$KO_gene <- ifelse(df_plot_comp_60$Protein==df_plot_comp_60$ProteinID_KO, "KO", "other")
+## assign pvals that are 0 something close to zero so we can visualize them
+set.seed(22)
+df_plot_comp_60$adj.pvalue_edit <- ifelse(df_plot_comp_60$adj.pvalue < 2e-16, 1e-15, df_plot_comp_60$adj.pvalue)
+## also make some labels
+df_plot_comp_60$plot_label <- ifelse(df_plot_comp_60$adj.pvalue_edit < alpha & abs(df_plot_comp_60$log2FC) > num_log2fc_threshold, df_plot_comp_60$Gene.Names..primary., NA )
+df_plot_comp_60$Significant <- ifelse(!is.na(df_plot_comp_60$plot_label), "yes", "no")
+
+vec_plot_colors <- c("no"="#999999", "yes" = "#D55E00", "KO" = "#56B4E9")
+ggplot() +
+  geom_hline(yintercept = -log10(alpha), alpha = 0.5, linetype = "dotted") +
+  geom_point(data = df_plot_comp_60[which(df_plot_comp_60$Significant=="no"),], aes(x = log2FC, y = -log10(adj.pvalue_edit), color = "no") , alpha = 0.5) +
+  geom_point(data = df_plot_comp_60[which(df_plot_comp_60$Significant=="yes"),], aes(x = log2FC, y = -log10(adj.pvalue_edit), color = "yes"), alpha = 1) +
+  geom_point(data = df_plot_comp_60[which(df_plot_comp_60$KO_gene=="KO"),], aes(x = log2FC, y = -log10(adj.pvalue_edit), color = "KO"), size = 2, show.legend = TRUE) +
+  ggrepel::geom_label_repel(data = df_plot_comp_60[which(df_plot_comp_60$Significant=="yes"),], aes(x = log2FC, y = -log10(adj.pvalue_edit), label = plot_label, color = "yes"), show.legend = FALSE) +
+  ggrepel::geom_label_repel(data = df_plot_comp_60[which(df_plot_comp_60$KO_gene=="KO"),], aes(x = log2FC, y = -log10(adj.pvalue_edit), label = plot_label, color = "KO"), show.legend = FALSE) +
+  scale_x_continuous(breaks = seq(-10,10, by = 2), limits = c(-10,10))+
+  ylim(0,15.5) +
+  scale_color_manual(name = "Significance", values = vec_plot_colors) +
+  annotate(geom = "text", x = -7, y = 3, label = paste0("Sigificance:\n", "abs(Log2FC) > ", num_log2fc_threshold, "\nalpha < ", alpha), size = 4) +
+  ggtitle(paste0(vec_experimental_conditions[num_experimental_i], " vs. ", vec_control_conditions[num_control_i]))
+
+
+```
+## GSEA
+```{r}
+#### Bioinformatics work, Individual KOs ####
+## Use WebGestalt or GSEA?
+# load("./data_images/24_11_17_groupComparison_60SPD.RData")
+# BiocManager::install("fgsea", "reactome.db")
+library(fgsea)
+# library(reactome.db)
+
+# pathways <- reactomePathways(df_plot_comp_30$Protein)
+## read in UniProt reviewed
+# df_up_rev <- read.table("uniprotkb_Human_AND_reviewed_true_AND_m_2024_11_22.tsv", sep = "\t", header = T, na.strings = c("NA", "NULL", "Null", "null", "NaN"), fill = T, quote = "")
+# df_up_to_ensembl <- read.table("idmapping_2024_11_22.tsv", sep = "\t", header = T, na.strings = c("NA", "NULL", "Null", "null", "NaN"), fill = T, quote = "" )
+# names(df_up_to_ensembl) <- c("Entry", "Ensembl_ID")
+# df_up_rev <- merge(df_up_rev, df_up_to_ensembl, by = "Entry", all.x = T)
+# pathways <- gmtPathways("CytoReason_KPMP_GeneSets.gmt")
+pathways <- fgsea::gmtPathways("./data/c2.cp.v7.0.symbols.gmt")
+# pathways <- fgsea::gmtPathways("msigdb.v2024.1.Hs.symbols.gmt")
+# pathways <- fgsea::gmtPathways("c5.go.v7.5.1.symbols.gmt")
+# 1 ACVRL1_G1G2
+# 11 ERG_G3G4
+# 12 FGFR_G1G2
+# 20 KLF2_G3G4
+# 21 MTOR_G3G4
+# 25 PTPRB_G1G2
+num_control_i <- 1
+num_experimental_i <-  12
+alpha <- 0.05
+
+## RUn this as a loop. Then show histogram of nrow(fgseaRes 30) where padj < alpha- nrow(fgseaRes 60) where padj < alpha
+## make sure have pathways available before loop
+# pathways <- fgsea::gmtPathways("c2.cp.v7.0.symbols.gmt")
+# pathways <- fgsea::gmtPathways("c5.go.v7.5.1.symbols.gmt")
+vec_pathways_compare_30_signif <- rep(NA, length(vec_experimental_conditions))
+vec_pathways_compare_60_signif <- rep(NA, length(vec_experimental_conditions))
+vec_pathways_compare_30_all <- rep(NA, length(vec_experimental_conditions))
+vec_pathways_compare_60_all <- rep(NA, length(vec_experimental_conditions))
+for (i in 1:length(vec_experimental_conditions)) {
+  num_control_i <- 1
+  num_experimental_i <-  i
+  df_plot_comp_30 <- df_comp_30[which(grepl(vec_control_conditions[num_control_i], df_comp_30$Label) & grepl(vec_experimental_conditions[num_experimental_i], df_comp_30$Label) & is.na(df_comp_30$issue)) ,]
+
+  df_plot_comp_30$KO_gene <- ifelse(df_plot_comp_30$Protein==df_plot_comp_30$ProteinID_KO, "KO", "other")
+
+  num_control_i <- 1
+  num_experimental_i <-  i
+  df_plot_comp_60 <- df_comp_60[which(grepl(vec_control_conditions[num_control_i], df_comp_60$Label) & grepl(vec_experimental_conditions[num_experimental_i], df_comp_60$Label) & is.na(df_comp_60$issue)) ,]
+
+  df_plot_comp_60$KO_gene <- ifelse(df_plot_comp_60$Protein==df_plot_comp_60$ProteinID_KO, "KO", "other")
+  
+
+
+  ## only use the ones that are adj.p.value < alpha
+  exampleRanks_precursor_30 <- df_plot_comp_30[which(df_plot_comp_30$adj.pvalue < alpha),]
+  exampleRanks_edit_30 <- exampleRanks_precursor_30$log2FC
+  names(exampleRanks_edit_30) <- exampleRanks_precursor_30$Gene.Names..primary.
+  
+  fgseaRes_30 <- fgsea(pathways = pathways, 
+                       stats = exampleRanks_edit_30,
+                       minSize = 5, 
+                       maxSize = 500)
+  
+  
+  exampleRanks_precursor_60 <- df_plot_comp_60[which(df_plot_comp_60$adj.pvalue < alpha),]
+  exampleRanks_edit_60 <- exampleRanks_precursor_60$log2FC
+  names(exampleRanks_edit_60) <- exampleRanks_precursor_60$Gene.Names..primary.
+  
+  fgseaRes_60 <- fgsea(pathways = pathways, 
+                       stats = exampleRanks_edit_60,
+                       minSize = 5, 
+                       maxSize = 500)
+  vec_pathways_compare_30_signif[i] <- nrow(fgseaRes_30[which(fgseaRes_30$padj < alpha),])
+  vec_pathways_compare_60_signif[i] <- nrow(fgseaRes_60[which(fgseaRes_60$padj < alpha),])
+  vec_pathways_compare_30_all[i] <- nrow(fgseaRes_30)
+  vec_pathways_compare_60_all[i] <- nrow(fgseaRes_60)
+}
+vec_pathways_compare_signif_diff <- vec_pathways_compare_30_signif - vec_pathways_compare_60_signif
+vec_pathways_compare_all_diff <- vec_pathways_compare_30_all - vec_pathways_compare_60_all
+
+ggplot() + aes(vec_pathways_compare_all_diff) +
+  geom_histogram(binwidth = 2.5, boundary = 0) +
+  scale_x_continuous(breaks = seq(-10,150,by = 25), limits = c(-10,150)) +
+  geom_vline(xintercept = 0, linetype = "dotted") +
+  xlab("Difference in number pathways captured between 30 and 60 SPD") 
+```
+

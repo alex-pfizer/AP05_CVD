@@ -128,7 +128,7 @@ DA_msstats_30 <- MSstats::groupComparison(contrast.matrix = mat_comparison_mssta
 ## save memory, compost
 spectronaut_proposed_30 <- NULL
 char_filename_date <- format(Sys.time(), "%Y_%m_%d_%H_%M_%S")
-save.image(paste0("./data_images/", char_filename_date, "DA_msstats_30.RData"))
+# save.image(paste0("./data_images/", char_filename_date, "DA_msstats_30.RData"))
 
 ## Pull out the comparison table
 df_comp_30 <- DA_msstats_30$ComparisonResult
@@ -136,7 +136,7 @@ df_comp_30 <- DA_msstats_30$ComparisonResult
 ## save memory, compost
 DA_msstats_30 <- NULL
 char_filename_date <- format(Sys.time(), "%Y_%m_%d_%H_%M_%S")
-# save.image(paste0("./data_images/", char_filename_date, "df_30_df_comp_30.RData"))
+save.image(paste0("./", char_filename_date, "df_30_df_comp_30.RData"))
 
 
 

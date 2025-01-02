@@ -9,7 +9,7 @@ output:
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+# knitr::opts_chunk$set()
 ```
 
 ## Cardiovascular Disease (CVD) Screen
@@ -317,7 +317,7 @@ save.image(paste0("./data_images/", char_filename_date, "df_comp_30_df_comp_60.R
 ## Load the data locally.
 There is another script in this folder to load in the data and run it through MSstats. Run this before running the knitr function of this .Rmd file. Then, just load the .RData file.
 ```{r}
-# load("")
+load("./data_images/2025_01_02_15_47_13df_comp_30_df_comp_60.RData")
 ```
 
 

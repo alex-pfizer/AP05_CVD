@@ -1,10 +1,10 @@
 ## Run MSstats for the 30 SPD runs.
-Need to locally load the dataset beforehand because it is enormous. This step will be eliminated in the future due to the PDP MSstats integration.
-
-```{r, echo = FALSE, eval = FALSE}
+## Need to locally load the dataset beforehand because it is enormous. This step will be eliminated in the future due to the PDP MSstats integration.
+setwd("~/Desktop")
+## also commented out all .RData file saves except for final one, to load into .Rmd file
 
 #### 30 SPD first through MSstats ####
-df_raw_30 <- read.table("./data/Report_CardioCRISPR_FullScreen_Plates1-4_DIA-30SPD.tsv", sep = "\t", header = T, na.strings = c("NA", "NULL", "Null", "null", "NaN"))
+df_raw_30 <- read.table("Report_CardioCRISPR_FullScreen_Plates1-4_DIA-30SPD.tsv", sep = "\t", header = T, na.strings = c("NA", "NULL", "Null", "null", "NaN"))
 
 ## drop rows that MSstats throws out
 df_raw_30 <- df_raw_30[which(df_raw_30$F.ExcludedFromQuantification=="False" & df_raw_30$F.FrgLossType=="noloss"),]
@@ -27,7 +27,7 @@ quant_30 <- MSstats::SpectronauttoMSstatsFormat(df_raw_30,
 ## save memory
 df_raw_30 <- NULL
 char_filename_date <- format(Sys.time(), "%Y_%m_%d_%H_%M_%S")
-save.image(paste0("./data_images/", char_filename_date, "quant_30.RData"))
+# save.image(paste0("./data_images/", char_filename_date, "quant_30.RData"))
 
 ## Run dataProcess step, "actual math" as Liang says
 ## If running Mac/Linux, can use multiple cores.
@@ -66,7 +66,7 @@ if (.Platform$OS.type=="windows") {
 ## save memory, compost
 quant_30 <- NULL
 char_filename_date <- format(Sys.time(), "%Y_%m_%d_%H_%M_%S")
-save.image(paste0("./data_images/", char_filename_date, "spectronaut_proposed_30.RData"))
+# save.image(paste0("./data_images/", char_filename_date, "spectronaut_proposed_30.RData"))
 
 ## assign protein level data a dataframe
 df_30 <- spectronaut_proposed_30$ProteinLevelData
@@ -136,16 +136,16 @@ df_comp_30 <- DA_msstats_30$ComparisonResult
 ## save memory, compost
 DA_msstats_30 <- NULL
 char_filename_date <- format(Sys.time(), "%Y_%m_%d_%H_%M_%S")
-save.image(paste0("./data_images/", char_filename_date, "df_30_df_comp_30.RData"))
+# save.image(paste0("./data_images/", char_filename_date, "df_30_df_comp_30.RData"))
 
 
 
-```
+
 
 ## Run MSstats for 60 SPD runs.
-```{r, echo = FALSE, eval = FALSE}
+
 #### 60 SPD first through MSstats ####
-df_raw_60 <- read.table("./data/Report_CardioCRISPR_FullScreen_Plates1-4_DIA-60SPD.tsv", sep = "\t", header = T, na.strings = c("NA", "NULL", "Null", "null", "NaN"))
+df_raw_60 <- read.table("Report_CardioCRISPR_FullScreen_Plates1-4_DIA-60SPD.tsv", sep = "\t", header = T, na.strings = c("NA", "NULL", "Null", "null", "NaN"))
 
 ## drop rows that MSstats throws out
 df_raw_60 <- df_raw_60[which(df_raw_60$F.ExcludedFromQuantification=="False" & df_raw_60$F.FrgLossType=="noloss"),]
@@ -168,7 +168,7 @@ quant_60 <- MSstats::SpectronauttoMSstatsFormat(df_raw_60,
 ## save memory
 df_raw_60 <- NULL
 char_filename_date <- format(Sys.time(), "%Y_%m_%d_%H_%M_%S")
-save.image(paste0("./data_images/", char_filename_date, "quant_60.RData"))
+# save.image(paste0("./data_images/", char_filename_date, "quant_60.RData"))
 
 ## Run dataProcess step, "actual math" as Liang says
 ## If running Mac/Linux, can use multiple cores.
@@ -207,7 +207,7 @@ if (.Platform$OS.type=="windows") {
 ## save memory, compost
 quant_60 <- NULL
 char_filename_date <- format(Sys.time(), "%Y_%m_%d_%H_%M_%S")
-save.image(paste0("./data_images/", char_filename_date, "spectronaut_proposed_60.RData"))
+# save.image(paste0("./data_images/", char_filename_date, "spectronaut_proposed_60.RData"))
 
 ## assign protein level data a dataframe
 df_60 <- spectronaut_proposed_60$ProteinLevelData
@@ -269,7 +269,7 @@ DA_msstats_60 <- MSstats::groupComparison(contrast.matrix = mat_comparison_mssta
 ## save memory, compost
 spectronaut_proposed_60 <- NULL
 char_filename_date <- format(Sys.time(), "%Y_%m_%d_%H_%M_%S")
-save.image(paste0("./data_images/", char_filename_date, "DA_msstats_60.RData"))
+# save.image(paste0("./data_images/", char_filename_date, "DA_msstats_60.RData"))
 
 ## Pull out the comparison table
 df_comp_60 <- DA_msstats_60$ComparisonResult
@@ -277,5 +277,4 @@ df_comp_60 <- DA_msstats_60$ComparisonResult
 ## save memory, compost
 DA_msstats_60 <- NULL
 char_filename_date <- format(Sys.time(), "%Y_%m_%d_%H_%M_%S")
-save.image(paste0("./data_images/", char_filename_date, "df_comp_30_df_comp_60.RData"))
-```
+save.image(paste0("./", char_filename_date, "df_comp_30_df_comp_60.RData"))

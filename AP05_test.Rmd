@@ -18,7 +18,7 @@ This project runs ~Sept 2024 - Spring 2025. Genetic knockouts made in 350 genes 
 
 In this report, we will:
   1. Set up the R packages we need
-  2. Fetch the data from a local source
+  2. Fetch the data from a local source (external)
   3. Process it by MSstats
 
 First, name packages that we need.
@@ -34,8 +34,9 @@ lapply(list.of.packages, require, character.only = TRUE)
 ```
 
 ## Run MSstats for the 30 SPD runs.
+Need to locally load the dataset beforehand because it is enormous. This step will be eliminated in the future due to the PDP MSstats integration.
 
-```{r}
+```{r, echo = FALSE, eval = FALSE}
 
 #### 30 SPD first through MSstats ####
 df_raw_30 <- read.table("./data/Report_CardioCRISPR_FullScreen_Plates1-4_DIA-30SPD.tsv", sep = "\t", header = T, na.strings = c("NA", "NULL", "Null", "null", "NaN"))
@@ -177,7 +178,7 @@ save.image(paste0("./data_images/", char_filename_date, "df_30_df_comp_30.RData"
 ```
 
 ## Run MSstats for 60 SPD runs.
-```{r}
+```{r, echo = FALSE, eval = FALSE}
 #### 60 SPD first through MSstats ####
 df_raw_60 <- read.table("./data/Report_CardioCRISPR_FullScreen_Plates1-4_DIA-60SPD.tsv", sep = "\t", header = T, na.strings = c("NA", "NULL", "Null", "null", "NaN"))
 
@@ -313,6 +314,13 @@ DA_msstats_60 <- NULL
 char_filename_date <- format(Sys.time(), "%Y_%m_%d_%H_%M_%S")
 save.image(paste0("./data_images/", char_filename_date, "df_comp_30_df_comp_60.RData"))
 ```
+## Load the data locally.
+There is another script in this folder to load in the data and run it through MSstats. Run this before running the knitr function of this .Rmd file. Then, just load the .RData file.
+```{r}
+# load("")
+```
+
+
 ## Quality control: Number proteins captured between runs
 ```{r}
 ## Add back in labels, identifiers

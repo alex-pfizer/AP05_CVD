@@ -8,10 +8,6 @@ output:
     code_folding: hide
 ---
 
-```{r setup, include=FALSE}
-# knitr::opts_chunk$set()
-```
-
 ## Cardiovascular Disease (CVD) Screen
 
 This project runs ~Sept 2024 - Spring 2025. Genetic knockouts made in 350 genes that were chosen by the computational geneticists in X cell line. Proteomics were performed on each KO. All proteomics analysis herein performed by AP.

@@ -917,8 +917,9 @@ ggplot() +
   # geom_text(aes(x = unique(gsub("-.*$", "", names(table(df_comp_60_plot1$Label))))[length(unique(gsub("-.*$", "", names(table(df_comp_60_plot1$Label)))))+1], y = 6, label = paste0(gsub("^.*-", "", names(table(df_comp_60_plot1$Label)[1])), "\n is control")), hjust = 1)
   annotate("text", x = length(names(table(df_comp_60_plot1$Label)))-3, y = 6, label = paste0(gsub("^.*-", "", names(table(df_comp_60_plot1$Label)[1])), "\n is control")) 
 ```
-## How many proteins were quantified in 30 vs. 60 SPD?
-```{r}
+## Difference in proteins quantified between 30 and 60 SPD
+
+```{r, fig.fullwidth = TRUE}
 ## Total numbers of proteins quantified. venn diagrams of proteins in common. Internal variability. Pathways, bleh. How many significant hits for both. 
 ## a dataframe like "number prots 30", "n prots 60", "n prots in common", "n prots sig 30", "n prots sig 60", "% portfolio coverage 30", "% portfolio coverage 60",. Should we do averages? Medians? Medians prob. Liang mentioned examining low abundance proteins. 
 
@@ -1104,6 +1105,7 @@ ggplot(data = df_30_60_captured_runs, aes(x = Estimated_abundance_bin, y = Diffe
 ```
 
 ## We want to know how many proteins' abundances are significantly changing in 30 vs. 60 SPD
+
 ```{r}
 ## ask how many proteins are significantly changing at the 5% FDR for each control condition
 
@@ -1185,8 +1187,10 @@ if (!file.exists("./output/df_30_60_signif_joe.csv")) {
   write.csv(df_30_60_signif_joe, "./output/df_30_60_signif_joe.csv")
 }
 ```
+
 ## Individual Volcano Plots
 These were cherry picked as > 50 significantly changing proteins
+
 ```{r}
 ## Proteins whose significantly changing proteins > 50 
 # 1 ACVRL1_G1G2
@@ -1255,6 +1259,7 @@ ggplot() +
 
 ```
 ## GSEA
+
 ```{r}
 #### Bioinformatics work, Individual KOs ####
 ## Use WebGestalt or GSEA?

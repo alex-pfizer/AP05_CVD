@@ -34,7 +34,7 @@ lapply(list.of.packages, require, character.only = TRUE)
 # vec_control_conditions
 ```
 
-## Run MSstats for the 30 SPD runs.
+### Run MSstats for the 30 SPD runs.
 Need to locally load the dataset beforehand because it is enormous. This step will be eliminated in the future due to the PDP MSstats integration.
 
 ```{r, echo = FALSE, eval = FALSE}
@@ -178,7 +178,7 @@ save.image(paste0("./data_images/", char_filename_date, "df_30_df_comp_30.RData"
 
 ```
 
-## Run MSstats for 60 SPD runs.
+### Run MSstats for 60 SPD runs.
 ```{r, echo = FALSE, eval = FALSE}
 #### 60 SPD first through MSstats ####
 df_raw_60 <- read.table("./data/Report_CardioCRISPR_FullScreen_Plates1-4_DIA-60SPD.tsv", sep = "\t", header = T, na.strings = c("NA", "NULL", "Null", "null", "NaN"))
@@ -315,15 +315,16 @@ DA_msstats_60 <- NULL
 char_filename_date <- format(Sys.time(), "%Y_%m_%d_%H_%M_%S")
 save.image(paste0("./data_images/", char_filename_date, "df_comp_30_df_comp_60.RData"))
 ```
-## Load the data locally.
+
+### Load the data locally.
 There is another script in this folder to load in the data and run it through MSstats. Run this before running the knitr function of this .Rmd file. Then, just load the .RData file.
 ```{r}
 load("./data_images/2025_01_02_15_47_13df_comp_30_df_comp_60.RData")
 ```
 
 
-## Quality control: Number proteins captured between runs
-```{r, fig.fullwidth = TRUE, fig.width = 10}
+### Quality control: Number proteins captured between runs
+```{r, fig.fullwidth = TRUE, fig.width = 16}
 ## Add back in labels, identifiers
 df_id <- read.csv("./data/Full Study Proteomics Samples Master Table 1.csv",header = T, na.strings = c("NA", "NULL", "Null", "null", "NaN"))
 ## add variable for plate edge, which includes wells 
@@ -483,7 +484,8 @@ ggplot(data = df_groupnames_60, aes(x = originalRUN, y = n_Proteins, fill = edge
   theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
   theme_bw()
 ```
-## PCA extravaganza
+### PCA extravaganza
+Many PCA plots, Scree plot
 ```{r}
 ## 30 SPD dot plots
 df_30a <- df_30[,c("originalRUN", "Protein", "LogIntensities")]
@@ -813,7 +815,7 @@ ggplot(data = df_pca_60a, aes(x = PC1, y = PC2, color = edge_well)) +
   g
 ```
 
-## Quality control
+### Quality control: KO efficiency
 Phew. Now that we have that all done, we can look at QC metrics for 30 SPD.
 ```{r}
 ## read in Max's list. This is not stable, just the Max list merging.
@@ -867,7 +869,7 @@ ggplot() +
   annotate("text", x = length(names(table(df_comp_30_plot1$Label)))-3, y = 6, label = paste0(gsub("^.*-", "", names(table(df_comp_30_plot1$Label)[1])), "\n is control")) 
 ```
 
-## Quality control for 60 SPD
+### Quality control for 60 SPD
 ```{r}
 ## read in Max's list
 df_max_list <- read.csv("./data/Ensemble ID_Portfolio List.csv",header = T, na.strings = c("NA", "NaN", "na", "Null", "NULL", "null", "FALSE", ""))
@@ -919,7 +921,7 @@ ggplot() +
   # geom_text(aes(x = unique(gsub("-.*$", "", names(table(df_comp_60_plot1$Label))))[length(unique(gsub("-.*$", "", names(table(df_comp_60_plot1$Label)))))+1], y = 6, label = paste0(gsub("^.*-", "", names(table(df_comp_60_plot1$Label)[1])), "\n is control")), hjust = 1)
   annotate("text", x = length(names(table(df_comp_60_plot1$Label)))-3, y = 6, label = paste0(gsub("^.*-", "", names(table(df_comp_60_plot1$Label)[1])), "\n is control")) 
 ```
-## Difference in proteins quantified between 30 and 60 SPD
+### Difference in proteins quantified between 30 and 60 SPD
 
 ```{r, fig.fullwidth = TRUE}
 ## Total numbers of proteins quantified. venn diagrams of proteins in common. Internal variability. Pathways, bleh. How many significant hits for both. 
@@ -1106,7 +1108,7 @@ ggplot(data = df_30_60_captured_runs, aes(x = Estimated_abundance_bin, y = Diffe
 # df_60_portfolio_runs <- merge(df_60_portfolio_runs, df_portfolio_id_genenames, by = "Protein", all.x = T)
 ```
 
-## We want to know how many proteins' abundances are significantly changing in 30 vs. 60 SPD
+### We want to know how many proteins' abundances are significantly changing in 30 vs. 60 SPD
 
 ```{r}
 ## ask how many proteins are significantly changing at the 5% FDR for each control condition
@@ -1190,7 +1192,7 @@ if (!file.exists("./output/df_30_60_signif_joe.csv")) {
 }
 ```
 
-## Individual Volcano Plots
+### Individual Volcano Plots
 These were cherry picked as > 50 significantly changing proteins
 
 ```{r}

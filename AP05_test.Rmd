@@ -7,6 +7,9 @@ output:
     toc: true
     code_folding: hide
 ---
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+```
 
 ## Cardiovascular Disease (CVD) Screen
 
@@ -318,7 +321,7 @@ load("./data_images/2025_01_02_15_47_13df_comp_30_df_comp_60.RData")
 
 
 ## Quality control: Number proteins captured between runs
-```{r}
+```{r, fig.fullwidth = TRUE, fig.width = 10}
 ## Add back in labels, identifiers
 df_id <- read.csv("./data/Full Study Proteomics Samples Master Table 1.csv",header = T, na.strings = c("NA", "NULL", "Null", "null", "NaN"))
 ## add variable for plate edge, which includes wells 
@@ -867,7 +870,7 @@ ggplot() +
 ## read in Max's list
 df_max_list <- read.csv("./data/Ensemble ID_Portfolio List.csv",header = T, na.strings = c("NA", "NaN", "na", "Null", "NULL", "null", "FALSE", ""))
 df_max_list <- df_max_list[which(!is.na(df_max_list$Gene.gRNA.number)),]
-df_max_uniprot <- read.table("/data/AP05_Maxlist_idmapping_reviewed_true_2024_11_14.tsv", sep = "\t", header = TRUE)
+df_max_uniprot <- read.table("./data/AP05_Maxlist_idmapping_reviewed_true_2024_11_14.tsv", sep = "\t", header = TRUE)
 names(df_max_uniprot)[names(df_max_uniprot)=="From"] <- "Ensembl_ID"
 df_portfolio_names <- merge(df_max_list, df_max_uniprot, by = "Ensembl_ID", all.x = TRUE)
 ## THIS WILL NOT WORK IN THE FUTURE
@@ -884,7 +887,7 @@ df_portfolio_actual$guide_pair <- gsub("-.*$", "", df_portfolio_actual$Label)
 df_portfolio_actual$guide_pair <- gsub("^.*_", "", df_portfolio_actual$guide_pair)
 names(df_portfolio_actual)[names(df_portfolio_actual)=="Protein"] <- "ProteinID_KO"
 ## first pull in Gene Symbols
-df_up <- read.table("/data/uniprotkb_Human_AND_model_organism_9606_2024_10_21.tsv", sep = "\t", header = T, na.strings = c("NA", "NULL", "Null", "null", "NaN"), fill = T, quote = "")
+df_up <- read.table("./data/uniprotkb_Human_AND_model_organism_9606_2024_10_21.tsv", sep = "\t", header = T, na.strings = c("NA", "NULL", "Null", "null", "NaN"), fill = T, quote = "")
 names(df_up)[which(names(df_up)=="Entry")] <- "Protein" 
 df_comp_60 <- merge(df_up, df_comp_60, by = "Protein")
 df_comp_60 <- merge(df_comp_60, df_portfolio_actual, by = "Label", all.x = T)
@@ -953,6 +956,14 @@ ggplot(data = df_groupnames_30_60, aes(x = n_Proteins, group = Run_type, fill = 
 
 ## Venn diagrams of proteins in common for all AAVS1 (+HPRT) runs since there are 24
 ## For each GROUP, we could find number overlap, number unique to 30, number unique to 60
+vec_KO_genes <- c("P42345", "P37023", "P29474", "P35414", "O14874", "Q6Q0C0", "P00492",
+                  "O95490", "Q9ULZ1", "Q9Y5W3", "P11308", NA, "P23467", "Q9H4F8", "Q16270",
+                  ## which FGFR? There are 4
+                  "P11362", "Q96CH1", "Q9H6K1", "P25963")
+## make the controls, aka denominator
+vec_control_conditions <- c("AAVS1_G1G2", "HPRT_G1G2", "HPRT_G1")
+vec_experimental_conditions <- levels(df_30$GROUP)[!(levels(df_30$GROUP) %in% vec_control_conditions)]
+vec_unique_groups <- unique(df_30$GROUP)
 vec_unique_groups_nofactor <- as.character(vec_unique_groups)
 
 vec_overlap_total <- rep(NA, length(vec_unique_groups_nofactor))
@@ -1123,12 +1134,12 @@ for (j in 1:length(vec_control_conditions)) {
     list_df_30_60_signif[[j]][i,c("KO_60_log2FC")] <- ifelse(length(!is.na(df_plot_comp_60[which(df_plot_comp_60$ProteinID_KO==df_plot_comp_60$Protein),c("log2FC")]))>0, df_plot_comp_60[which(df_plot_comp_60$ProteinID_KO==df_plot_comp_60$Protein),c("log2FC")], NA)
   }
 }
-View(list_df_30_60_signif[[1]])
+# View(list_df_30_60_signif[[1]])
 
 df_30_60_signif_all <- do.call(rbind, list_df_30_60_signif)
-if (!file.exists("./output/df_30_60_signif_all.csv")
+if (!file.exists("./output/df_30_60_signif_all.csv")) {
   write.csv(df_30_60_signif_all, "./output/df_30_60_signif_all.csv")
-
+}
 #### Also want this for Joe's specific list
 vec_Joe_list <- c("P62736", "Q01995", "P02751", "P05121", 
                   "P29474","P35968",
@@ -1167,11 +1178,12 @@ for (j in 1:length(vec_control_conditions)) {
     list_df_30_60_signif_joe[[j]][i,c("KO_60_log2FC")] <- ifelse(length(!is.na(df_plot_comp_60[which(df_plot_comp_60$ProteinID_KO==df_plot_comp_60$Protein),c("log2FC")]))>0, df_plot_comp_60[which(df_plot_comp_60$ProteinID_KO==df_plot_comp_60$Protein),c("log2FC")], NA)
   }
 }
-View(list_df_30_60_signif_joe[[1]])
+# View(list_df_30_60_signif_joe[[1]])
 
 df_30_60_signif_joe_all <- do.call(rbind, list_df_30_60_signif_joe)
-if (!file.exists("./output/df_30_60_signif_joe.csv")
+if (!file.exists("./output/df_30_60_signif_joe.csv")) {
   write.csv(df_30_60_signif_joe, "./output/df_30_60_signif_joe.csv")
+}
 ```
 ## Individual Volcano Plots
 These were cherry picked as > 50 significantly changing proteins
